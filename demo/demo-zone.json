@@ -1,0 +1,69 @@
+{
+  "domains": [
+    {
+      "domain": "demo.example.com",
+      "anchors": [
+        "192.0.2.42",
+        "198.51.100.7",
+        "2001:db8:abcd:1234::1",
+        "2001:db8:abcd::1",
+        "203.0.113.50",
+        "198.51.100.20"
+      ],
+      "service": [
+        {
+          "id": "#0",
+          "type": "default",
+          "serviceEndpoint": "/r/<identifier>"
+        },
+        {
+          "id": "#1",
+          "type": "tag",
+          "serviceEndpoint": "/tag/<identifier>"
+        },
+        {
+          "id": "#3",
+          "type": "sensor",
+          "serviceEndpoint": "/sensors/<day>/<identifier>"
+        },
+        {
+          "id": "#4",
+          "type": "event",
+          "serviceEndpoint": "/events/<identifier>",
+          "alias_to": "/<type>/<identifier>"
+        },
+        {
+          "id": "#6",
+          "type": "widget",
+          "serviceEndpoint": "/widgets/<identifier>",
+          "alias_to": "/<type>/<identifier>"
+        }
+      ]
+    },
+    {
+      "domain": "data.demo.example.com",
+      "anchors": ["198.51.100.99"],
+      "uuid_document_uri": "data:application/json;base64,eyJAY29udGV4dCI6Imh0dHBzOi8vd3d3LnczLm9yZy9ucy9jaWQvdjEiLCJpZCI6ImRpZDp1dWlkOjAwMDAwMDAwLTAwMDAtODIwMC04MDAyLWM2MzM2NDYzMDAwMCIsInNlcnZpY2UiOlt7ImlkIjoiIzEiLCJ0eXBlIjoiaW5saW5lIiwic2VydmljZUVuZHBvaW50IjoiZGF0YTp0ZXh0L3BsYWluLHJlZmVyZW50LWJvZHktZm9yLTxpZGVudGlmaWVyPiJ9XX0="
+    },
+    {
+      "domain": "file.demo.example.com",
+      "anchors": ["198.51.100.100"],
+      "uuid_document_uri": "file:file/uuid-document.json"
+    },
+    {
+      "domain": "did.demo.example.com",
+      "anchors": ["198.51.100.101"],
+      "uuid_document_uri": "did:web:ruuid.s3.amazonaws.com"
+    },
+    {
+      "domain": "uuid.demo.example.com",
+      "anchors": ["198.51.100.102"],
+      "uuid_document_uri": "did:uuid:00000000-0000-8200-8002-c000022a0000"
+    },
+    {
+      "domain": "ruuid.s3-website-us-east-1.amazonaws.com",
+      "anchors": ["203.0.113.99"],
+      "uuid_document_uri": "http:/.well-known/uuid-document.json"
+    }
+  ]
+}

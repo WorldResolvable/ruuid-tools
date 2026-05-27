@@ -1,0 +1,16 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/cid/v1",
+    "https://www.w3.org/ns/did/v1"
+  ],
+  "id": "did:web:ruuid.s3.amazonaws.com",
+  "alsoKnownAs": ["did:uuid:00000000-0000-8200-8002-c63364650000"],
+  "verificationMethod": [],
+  "service": [
+    {
+      "id": "#1",
+      "type": "did-served",
+      "serviceEndpoint": "https://ruuid.s3.amazonaws.com/docs/<identifier>"
+    }
+  ]
+}

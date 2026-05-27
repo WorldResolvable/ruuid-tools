@@ -1,0 +1,15 @@
+{
+  "domains": [
+    {
+      "domain": "your-domain.example",
+      "anchors": ["192.0.2.1"],
+      "service": [
+        {
+          "id": "#0",
+          "type": "default",
+          "serviceEndpoint": "https://your-domain.example/r/<identifier>"
+        }
+      ]
+    }
+  ]
+}

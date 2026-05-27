@@ -1,0 +1,382 @@
+.TH RUUID 1 "May 2026" "ruuid-tools" "User Commands"
+.SH NAME
+ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
+.SH SYNOPSIS
+.B ruuid generate
+.I ADDRESS
+.RI [ IDENTIFIER ]
+.RB [ --type
+.IR N ]
+.RB [ --day
+.IR DATE ]
+.RB [ --opaque ]
+.br
+.B ruuid resolve
+.I UUID
+.RB [ --registry
+.IR URL ]
+.RB [ --follow [= WHAT ]]
+.RB [ --verbose ]
+.br
+.B ruuid parse
+.I UUID
+.RB [ --registry
+.IR URL ]
+.br
+.B ruuid document
+.B --zone
+.I FILE
+.RB [ --domain
+.IR DOMAIN ]
+.br
+.B ruuid records
+.B --zone
+.I FILE
+.RB [ --domain
+.IR DOMAIN ]
+.RB [ --rrtype
+.IR TYPE ]
+.RB [ --ttl
+.IR N ]
+.br
+.B ruuid anchor
+.B --zone
+.I FILE
+.RB [ --bind
+.IR ADDR ]
+.RB [ --dns-port
+.IR N ]
+.RB [ --http-port
+.IR N ]
+.RB [ --https-port
+.IR N ]
+.RB [ --rrtype
+.IR TYPE ]
+.SH DESCRIPTION
+.B ruuid
+is the reference CLI for Resolvable UUIDs, a UUIDv8 variant whose 64-bit
+network field carries an IPv6 /64 (or 6to4-encoded IPv4 /32) network prefix
+that maps to a DNS domain via reverse DNS. It generates, resolves, and serves
+RUUIDs end-to-end \(en a Python implementation of the Internet-Draft.
+.SH GENERATE
+.B ruuid generate \fIADDRESS\fR [\fIIDENTIFIER\fR] [\fB--type\fR \fIN\fR] [\fB--day\fR \fIDATE\fR] [\fB--opaque\fR]
+.PP
+Mint a new RUUID with
+.I ADDRESS
+as the IPv4 or IPv6 address whose network prefix is encoded into the UUID.
+.I IDENTIFIER
+is the 48-bit identifier as decimal or
+.RI 0x -hex.
+When
+.I IDENTIFIER
+is omitted, one is generated per the recommended construction in I-D \[sc]7.3:
+20-bit count of days since 2025-01-01 UTC, followed by a 28-bit cryptographically
+random sequence.
+.TP
+.B \-\-type \fIN\fR
+10-bit type field (default 0).
+.TP
+.B \-\-day \fIDATE\fR
+Day to use for the
+.I day_count
+high bits of the structured identifier, either as
+.B YYYY-MM-DD
+or as a bare integer count of days since 2025-01-01 UTC. Defaults to today UTC.
+Per the spec, MUST be a day on which the caller held the network prefix and
+MUST NOT be in the future. Mutually exclusive with
+.BR --opaque .
+.TP
+.B \-\-opaque
+Generate a plain 48-bit cryptographically random identifier instead of the
+structured form. Hides tenure information at the cost of a narrower collision
+bound. Mutually exclusive with
+.BR --day .
+.SH RESOLVE
+.B ruuid resolve \fIUUID\fR [options]
+.PP
+Run the spec's resolution pipeline: PTR lookup of the reverse-DNS name, URI
+query at
+.RI _uuid. <domain>
+(falling back to TXT), then optional HTTP(S) fetch of the UUID document and
+template substitution to get the referent URI.
+.TP
+.B \-\-registry \fIURL\fR
+Registry endpoint URL to try first. Default:
+.B dns://127.0.0.1:53
+(where
+.B ruuid anchor
+binds by default), so
+.B "ruuid anchor ZONE.json"
+followed by
+.B "ruuid resolve UUID"
+works out of the box for the local-anchor workflow. On any failure (anchor not
+running, prefix not in zone, timeout, NXDOMAIN at PTR), resolution falls back
+to the system DNS resolver. Forms:
+.RS
+.IP \(bu 2
+.B dns://\fIHOST\fR[:\fIPORT\fR]
+\(en DNS-protocol endpoint pointed at a specific server. That server is also
+used for downstream HTTP hostname resolution (so URLs like
+.I https://demo.example.com/...
+reach a local
+.B ruuid anchor
+without
+.I /etc/hosts
+edits).
+.IP \(bu 2
+.B doh://\fIHOST\fR[:\fIPORT\fR][/\fIPATH\fR]
+\(en RFC 8484 DoH endpoint (path defaults to
+.IR /dns-query ).
+HTTP fetches use system DNS.
+.IP \(bu 2
+.B https://\fIHOST\fR[/\fIPATH\fR]
+\(en HTTP-API registry endpoint returning the network-prefix-to-domain
+binding as JSON. HTTP fetches use system DNS.
+.RE
+.TP
+.B \-\-follow [=\fIWHAT\fR]
+Fetch the chain and write the body to stdout. Bare
+.B --follow
+or
+.B =referent
+fetches the referent URI body (pipeable into
+.IR jq );
+.B =document
+stops at and fetches the UUID document;
+.B =ruuid_document
+returns the synthesised per-RUUID DID document (the
+.B did:uuid
+method's wrapper of the Phase 2 URI);
+.B =referent_uri
+prints the referent URI without fetching.
+.TP
+.B \-\-verbose, \-v
+Print every step: detail block (network, reverse_name, domain, doc URI,
+referent URI), DNS trace (PTR + URI/TXT hops), the UUID document, the
+HTTP fetch trace (each GET, status, and any 302 alias hops), and the
+referent body.
+.PP
+Default output is the UUID-document URI alone, one line, pipeable into
+.IR curl .
+.SH PARSE
+.B ruuid parse \fIUUID\fR [\fB--registry\fR \fIURL\fR]
+.PP
+Run the spec's resolution pipeline through Phase 2 and print the detail block
+plus the DNS/HTTP trace, without fetching or printing any of the body content.
+Equivalent to
+.B ruuid resolve --verbose
+minus the
+.IR "--- UUID document ---" ,
+.IR "--- did:uuid: Document ---" ,
+and
+.I "--- referent body ---"
+sections.
+Useful for "what does this RUUID decode to, and where does the resolution
+chain land?" without pulling the referent over the wire.
+.B --registry
+has the same semantics and default as for
+.B ruuid resolve
+(default
+.IR dns://127.0.0.1:53 ,
+fall back to system DNS).
+.PP
+The
+.I identifier
+field is followed by a continuation line showing the \[sc]7.3 reading
+(20-bit
+.IR day_count
++ 28-bit
+.IR sequence ),
+along with the calendar date implied by
+.IR day_count :
+.PP
+.RS
+.nf
+identifier:        00000000002a
+                   \[sc]7.3: day_count=0 (2025-01-01), sequence=0x000002a
+.fi
+.RE
+.PP
+The resolver cannot tell from the bits whether the identifier was actually
+constructed under \[sc]7.3 or was opaque 48-bit random \(em both look the same. When
+the implied
+.I day_count
+falls in the future, that's a definite tell that the identifier is opaque
+(\[sc]7.3 forbids future day_counts), and the line says so.
+.PP
+When registry resolution fails entirely (no primary, no system-DNS fallback
+that can answer), the DNS-derived fields are shown as
+.I "not resolved"
+rather than as a wall of timeout output. The bit-level fields
+(\fIuuid\fR, \fInetwork\fR, \fIidentifier\fR, \fItype_id\fR, \fIreverse_name\fR)
+still print, since those don't depend on DNS. Successful-but-failover paths
+suppress the FAILOVR line and per-hop error entries; only the successful
+hops print.
+.SH DOCUMENT
+.B ruuid document --zone \fIFILE\fR [\fB--domain\fR \fIDOMAIN\fR]
+.PP
+Print the UUID document for a domain entry in the zone file as JSON, suitable
+for uploading to
+.I https://<domain>/.well-known/uuid-document.json
+or wherever the
+.RI _uuid. <domain>
+URI/TXT record points.
+.B --domain
+selects one domain when the zone defines more than one.
+.SH RECORDS
+.B ruuid records --zone \fIFILE\fR [options]
+.PP
+Print the BIND-style DNS records (PTR per anchor + URI/TXT at
+.RI _uuid. <domain> )
+to install at the authoritative DNS provider.
+.TP
+.B \-\-domain \fIDOMAIN\fR
+Restrict output to records for one domain's entries (default: emit for all).
+.TP
+.B \-\-rrtype \fIboth\fR|\fIURI\fR|\fITXT\fR
+Restrict the records published at
+.RI _uuid. <domain>
+to one type (default
+.IR both ).
+.TP
+.B \-\-ttl \fIN\fR
+TTL in seconds (default 3600).
+.SH ANCHOR
+.B ruuid anchor --zone \fIFILE\fR [options]
+.PP
+Run a long-lived daemon that serves DNS (PTR + URI/TXT at
+.RI _uuid. <domain> ,
+UDP and TCP) and HTTP(S) (UUID documents + stub referents) for a JSON zone
+file. Default ports are 53 (DNS), 80 (HTTP), and 443 (HTTPS when a cert is
+present); the privileged defaults need root.
+.TP
+.B \-\-bind \fIADDR\fR
+Address to bind on (default
+.IR 127.0.0.1 ).
+.TP
+.B \-\-dns-port \fIN\fR
+UDP+TCP port for DNS (default 53).
+.TP
+.B \-\-http-port \fIN\fR
+TCP port for HTTP (default 80).
+.TP
+.B \-\-https-port \fIN\fR
+TCP port for HTTPS (default 443; HTTPS is only served when a cert is found).
+.TP
+.B \-\-rrtype \fIboth\fR|\fIURI\fR|\fITXT\fR
+Restrict the records published at
+.RI _uuid. <domain>
+to one type. Default is
+.IR both .
+Useful for testing a resolver's URI-preferred and TXT-fallback paths in
+isolation.
+.PP
+If
+.I /etc/ruuid/anchor-cert.pem
+(or
+.I ./anchor-cert.pem
+in the working directory) exists,
+.B ruuid anchor
+serves HTTPS alongside HTTP. The
+.B ruuid resolve
+side trusts the same file with hostname checking off (the demo cert is
+shared across many demo hostnames).
+.SH FILES
+.TP
+.I /etc/ruuid/anchor-cert.pem
+Combined cert+key PEM. Auto-detected by both
+.B ruuid anchor
+(serves HTTPS) and
+.B ruuid resolve
+(trusts it). Generated by
+.IR "sudo make install-global" .
+.TP
+.I /usr/local/bin/ruuid
+The CLI launcher dropped by
+.IR "sudo make install-global" .
+.TP
+.I ~/.local/bin/ruuid
+The CLI launcher dropped by
+.I make deps
+(per-user install).
+.SH EXAMPLES
+Mint an RUUID and resolve it against a local anchor (the default
+.B --registry
+is
+.IR dns://127.0.0.1:53 ,
+so this works without specifying it):
+.PP
+.RS
+.nf
+$ sudo ruuid anchor --zone demo-zone.json &
+$ ruuid generate 192.0.2.42 0xABCDEF --type 7
+00000000-abcdef-8200-8072-c000022a0000
+
+$ ruuid resolve 00000000-abcdef-8200-8072-c000022a0000
+https://demo.example.com/.well-known/uuid-document.json
+.fi
+.RE
+.PP
+Mint with a structured identifier (the default when omitted) versus opaque random:
+.PP
+.RS
+.nf
+$ ruuid generate 192.0.2.42                          # day_count = today || random
+000147ec-a4f1-8200-8002-c000022a0000
+
+$ ruuid generate 192.0.2.42 --day 2025-01-01         # pinned to epoch (day_count=0)
+00000a4f-1234-8200-8002-c000022a0000
+
+$ ruuid generate 192.0.2.42 --opaque                 # 48-bit random
+fc18a374-9d3b-8200-8002-c000022a0000
+.fi
+.RE
+.PP
+Decode an RUUID and inspect the resolution chain without fetching the
+referent body or printing JSON documents:
+.PP
+.RS
+.nf
+$ ruuid parse 00000000-cafe-8200-8012-080808080000
+uuid:              00000000-cafe-8200-8012-080808080000
+network:           8.8.8.8/32
+identifier:        00000000cafe
+                   \[sc]7.3: day_count=0 (2025-01-01), sequence=0x0000cafe
+type_id:           1
+reverse_name:      8.8.8.8.in-addr.arpa
+domain:            dns.google
+uuid_document_uri: https://dns.google/.well-known/uuid-document.json
+                   (template: https://<domain>/<type>/<identifier> [no document; spec default])
+referent_uri:      https://dns.google/1/00000000cafe
+
+PTR     8.8.8.8.in-addr.arpa \[->] dns.google
+default _uuid.dns.google \[->] using default https://dns.google/.well-known/uuid-document.json
+.fi
+.RE
+.PP
+Fetch the referent body, pipeable into jq:
+.PP
+.RS
+.nf
+$ ruuid resolve --follow \fIUUID\fR | jq .
+.fi
+.RE
+.PP
+Run a local anchor that publishes only TXT records (for testing a
+resolver's TXT-fallback path):
+.PP
+.RS
+.nf
+$ sudo ruuid anchor --rrtype TXT --zone demo-zone.json
+.fi
+.RE
+.SH SEE ALSO
+.IR curl (1),
+.IR dig (1),
+.IR systemd.unit (5).
+.PP
+Internet-Draft:
+.I draft-motters-ruuid
+in the
+.I ruuid-draft/
+directory of the source tree.

@@ -1,0 +1,11 @@
+{
+  "@context": "https://www.w3.org/ns/cid/v1",
+  "alsoKnownAs": ["did:uuid:00000000-0000-8200-8002-c63364640000"],
+  "service": [
+    {
+      "id": "#1",
+      "type": "file-served",
+      "serviceEndpoint": "<identifier>.json"
+    }
+  ]
+}

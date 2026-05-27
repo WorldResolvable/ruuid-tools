@@ -1,0 +1,13 @@
+{
+  "@context": "https://www.w3.org/ns/cid/v1",
+  "id": "http://ruuid.s3-website-us-east-1.amazonaws.com/.well-known/uuid-document.json",
+  "alsoKnownAs": ["did:uuid:00000000-0000-8200-8002-cb0071630000"],
+  "service": [
+    {
+      "id": "#1",
+      "type": "doc",
+      "serviceEndpoint": "/docs/<identifier>"
+    }
+  ],
+  "hosted_at": "AWS S3 static web hosting (bucket: ruuid, region: us-east-1)"
+}

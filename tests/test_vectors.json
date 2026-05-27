@@ -1,0 +1,223 @@
+{
+  "_about": "Conformance test vectors for the Resolvable UUID (RUUID) Internet-Draft. Implementations in any language can load this file and verify (a) encoding/decoding of RUUIDs, (b) reverse-DNS name derivation, (c) referent-template substitution, and (d) the responses a spec-conformant anchor must produce. The (d) vectors reference demo/demo-zone.json so they're reproducible against the bundled ruuid anchor.",
+
+  "generate": [
+    {
+      "address": "192.0.2.42",
+      "identifier": 188900966474565,
+      "identifier_hex": "0xabcdef012345",
+      "type_id": 1,
+      "expected_ruuid": "abcdef01-2345-8200-8012-c000022a0000"
+    },
+    {
+      "address": "198.51.100.7",
+      "identifier": 4660,
+      "identifier_hex": "0x1234",
+      "type_id": 8,
+      "expected_ruuid": "00000000-1234-8200-8082-c63364070000"
+    },
+    {
+      "address": "10.20.30.40",
+      "identifier": 51966,
+      "identifier_hex": "0xcafe",
+      "type_id": 0,
+      "expected_ruuid": "00000000-cafe-8200-8002-0a141e280000"
+    },
+    {
+      "address": "2001:db8:abcd::1",
+      "identifier": 20015998343868,
+      "identifier_hex": "0x123456789abc",
+      "type_id": 4,
+      "expected_ruuid": "12345678-9abc-8200-8041-0db8abcd0000"
+    },
+    {
+      "address": "2001:db8:abcd:1234::1",
+      "identifier": 280223972340240,
+      "identifier_hex": "0xfedcba543210",
+      "type_id": 3,
+      "expected_ruuid": "fedcba54-3210-8200-8031-0db8abcd1234"
+    }
+  ],
+
+  "decode": [
+    {
+      "ruuid": "abcdef01-2345-8200-8012-c000022a0000",
+      "version": 8,
+      "variant": "RFC 4122",
+      "type_id": 1,
+      "identifier_hex": "0xabcdef012345",
+      "address_family": 4,
+      "network": "192.0.2.42/32",
+      "reverse_dns_name": "42.2.0.192.in-addr.arpa"
+    },
+    {
+      "ruuid": "12345678-9abc-8200-8041-0db8abcd0000",
+      "version": 8,
+      "variant": "RFC 4122",
+      "type_id": 4,
+      "identifier_hex": "0x123456789abc",
+      "address_family": 6,
+      "network": "2001:db8:abcd::/64",
+      "reverse_dns_name": "0.0.0.0.d.c.b.a.8.b.d.0.1.0.0.2.ip6.arpa"
+    },
+    {
+      "ruuid": "fedcba54-3210-8200-8031-0db8abcd1234",
+      "version": 8,
+      "variant": "RFC 4122",
+      "type_id": 3,
+      "identifier_hex": "0xfedcba543210",
+      "address_family": 6,
+      "network": "2001:db8:abcd:1234::/64",
+      "reverse_dns_name": "4.3.2.1.d.c.b.a.8.b.d.0.1.0.0.2.ip6.arpa"
+    }
+  ],
+
+  "referent_template": [
+    {
+      "_about": "Substitution placeholders for referent_uri_template.",
+      "template": "https://<domain>/things/<identifier>",
+      "ruuid": "abcdef01-2345-8200-8012-c000022a0000",
+      "domain": "example.com",
+      "expected": "https://example.com/things/abcdef012345"
+    },
+    {
+      "template": "https://<domain>/<type>/<identifier>",
+      "ruuid": "abcdef01-2345-8200-8012-c000022a0000",
+      "domain": "example.com",
+      "expected": "https://example.com/1/abcdef012345"
+    },
+    {
+      "_about": "Default referent template applied when no type entry overrides it.",
+      "template": "https://<domain>/<type>/<identifier>",
+      "ruuid": "00000000-1234-8200-8082-c63364070000",
+      "domain": "demo.example.com",
+      "expected": "https://demo.example.com/8/000000001234"
+    }
+  ],
+
+  "anchor_dns": [
+    {
+      "_about": "PTR for an IPv4 /32 anchor.",
+      "zone": "demo/demo-zone.json",
+      "query": {"name": "42.2.0.192.in-addr.arpa", "type": "PTR"},
+      "expected_records": [
+        {"type": "PTR", "target": "demo.example.com."}
+      ]
+    },
+    {
+      "_about": "PTR for an IPv6 /64 anchor.",
+      "zone": "demo/demo-zone.json",
+      "query": {"name": "0.0.0.0.d.c.b.a.8.b.d.0.1.0.0.2.ip6.arpa", "type": "PTR"},
+      "expected_records": [
+        {"type": "PTR", "target": "demo.example.com."}
+      ]
+    },
+    {
+      "_about": "ANY at _uuid.<domain> for an issuer with types returns both URI and TXT records pointing at the same UUID-document URL.",
+      "zone": "demo/demo-zone.json",
+      "query": {"name": "_uuid.demo.example.com", "type": "ANY"},
+      "expected_records": [
+        {"type": "URI", "priority": 10, "weight": 1,
+         "target": "https://demo.example.com/.well-known/uuid-document.json"},
+        {"type": "TXT",
+         "data": "v=ruuid1 https://demo.example.com/.well-known/uuid-document.json"}
+      ]
+    },
+    {
+      "_about": "Synthetic A record for the issuer hostname (a dev-fixture convenience; in production this would be served by real DNS).",
+      "zone": "demo/demo-zone.json",
+      "query": {"name": "demo.example.com", "type": "A"},
+      "expected_records": [
+        {"type": "A", "target": "127.0.0.1"}
+      ]
+    }
+  ],
+
+  "anchor_http": [
+    {
+      "_about": "UUID document for the demo issuer with explicit types.",
+      "zone": "demo/demo-zone.json",
+      "request": {
+        "method": "GET",
+        "url": "https://demo.example.com/.well-known/uuid-document.json"
+      },
+      "expected_response": {
+        "status": 200,
+        "body_json": {
+          "@context": "https://www.w3.org/ns/did/v1",
+          "id": "did:uuid:00000000-0000-8200-8002-c000022a0000",
+          "alsoKnownAs": [
+            "did:uuid:00000000-0000-8200-8002-c63364070000",
+            "did:uuid:00000000-0000-8200-8001-0db8abcd1234",
+            "did:uuid:00000000-0000-8200-8001-0db8abcd0000",
+            "did:uuid:00000000-0000-8200-8002-cb0071320000",
+            "did:uuid:00000000-0000-8200-8002-c63364140000"
+          ],
+          "service": [
+            {"id": "#0", "type": "default",
+             "serviceEndpoint": "https://demo.example.com/r/<identifier>"},
+            {"id": "#1", "type": "tag",
+             "serviceEndpoint": "https://demo.example.com/tag/<identifier>"},
+            {"id": "#3", "type": "sensor",
+             "serviceEndpoint": "https://demo.example.com/sensors/<identifier>"},
+            {"id": "#4", "type": "Event",
+             "serviceEndpoint": "https://demo.example.com/events/<identifier>"},
+            {"id": "#6", "type": "Widget",
+             "serviceEndpoint": "https://demo.example.com/widgets/<identifier>"}
+          ]
+        }
+      }
+    },
+    {
+      "_about": "Referent stub for a class with an explicit path.",
+      "zone": "demo/demo-zone.json",
+      "request": {
+        "method": "GET",
+        "url": "https://demo.example.com/tag/abcdef012345"
+      },
+      "expected_response": {
+        "status": 200,
+        "body_json": {
+          "kind": "stub-referent",
+          "domain": "demo.example.com",
+          "type_id": "1",
+          "type_name": "tag",
+          "identifier": "abcdef012345"
+        }
+      }
+    },
+    {
+      "_about": "alias_to triggers HTTP 302 to the canonical alias URL.",
+      "zone": "demo/demo-zone.json",
+      "request": {
+        "method": "GET",
+        "url": "https://demo.example.com/events/123456789abc"
+      },
+      "expected_response": {
+        "status": 302,
+        "headers": {
+          "Location": "https://demo.example.com/4/123456789abc"
+        }
+      }
+    },
+    {
+      "_about": "Default-template fall-through: class not in document, but anchor still serves /<type>/<identifier> with via=default-template.",
+      "zone": "demo/demo-zone.json",
+      "request": {
+        "method": "GET",
+        "url": "https://demo.example.com/8/000000001234"
+      },
+      "expected_response": {
+        "status": 200,
+        "body_json": {
+          "kind": "stub-referent",
+          "domain": "demo.example.com",
+          "type_id": "8",
+          "type_name": "",
+          "identifier": "000000001234",
+          "via": "default-template"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "domain": "ruuid.s3-website-us-east-1.amazonaws.com",
+  "type_id": "1",
+  "type_name": "doc",
+  "identifier": "5300cafebeef",
+  "hosted_at": "AWS S3 static web hosting (bucket: ruuid, region: us-east-1)"
+}

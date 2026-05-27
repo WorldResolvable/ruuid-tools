@@ -1,0 +1,5 @@
+{
+  "identifier": "00000000f11e",
+  "served_from": "file:///home/brian/routing/ruuid/ruuid-tools/demo/file/00000000f11e.json",
+  "note": "this referent was read from the local filesystem via a file:// URI"
+}

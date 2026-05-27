@@ -1,0 +1,5 @@
+{
+  "reverse_dns_name": "99.113.0.203.in-addr.arpa",
+  "domain": "ruuid.s3-website-us-east-1.amazonaws.com",
+  "uuid_document_uri": "http://ruuid.s3-website-us-east-1.amazonaws.com/.well-known/uuid-document.json"
+}

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ruuid"
+version = "0.0.1"
+description = "Resolvable UUIDs (Internet Draft, work in progress)"
+requires-python = ">=3.10"
+dependencies = [
+    "dnspython>=2.4",
+    "dnslib>=0.9",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+]
+
+[project.scripts]
+ruuid = "ruuid.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ruuid"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
