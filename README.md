@@ -322,22 +322,29 @@ unchanged — only the publishing-side infrastructure changes.
 
 ## Library use
 
+Everything in `ruuid.__all__` is a public, importable API: identifier
+generation (`new_ruuid`, `RUUID`), the registry-phase `Resolver` and its
+pluggable `Transport` (`DnsTransport`, `DohTransport`), the
+document/referent helpers, and the end-to-end `resolve_ruuid`.
+
 ```python
-from ruuid import RUUID, Resolver, new_ruuid, resolve_referent_uri
+from ruuid import new_ruuid, resolve_ruuid
 
 ru = new_ruuid("192.0.2.42", type_id=42)
 print(str(ru))                          # canonical UUID textual form
 
-resolver = Resolver()
-out = resolver.resolve(ru)              # {reverse_name, domain, uuid_document_uri}
-# ...fetch the UUID document over HTTPS, then:
-ref_uri = resolve_referent_uri(ru, domain=out["domain"], document=doc)
+out = resolve_ruuid(ru, follow="referent_uri")
+print(out["domain"], out["referent_uri"])
 ```
+
+**Full API reference: [docs/API.md](docs/API.md)** — every call, its
+arguments, return shapes, and examples.
 
 ## Layout
 
 ```
 ruuid/                 the library (core, generate, resolve, anchor, cli)
+docs/API.md            library API reference
 tests/                 pytest test suite (fake DNS server in conftest.py)
 demo/demo.sh           end-to-end bash demo driving the ruuid CLI
 demo/demo-zone.json    zone file for the demo's `ruuid anchor` instance
