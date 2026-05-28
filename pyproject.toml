@@ -25,3 +25,8 @@ packages = ["ruuid"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Treat warnings as errors so leaked resources (unclosed sockets,
+# temp-file-backed HTTPError bodies) surface as test failures instead
+# of silently passing. Add targeted `ignore::` entries here if a
+# dependency emits unavoidable noise.
+filterwarnings = ["error"]

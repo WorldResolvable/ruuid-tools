@@ -649,14 +649,23 @@ class Anchor:
             self._https_thread.start()
 
     def stop(self) -> None:
+        # shutdown() stops the serve_forever loop; server_close() releases
+        # the listening socket. dnslib's DNSServer.stop() only does the
+        # former, so close its underlying socketserver explicitly. Without
+        # the server_close() calls the sockets leak (ResourceWarning under
+        # -W error).
         if self._http_server is not None:
             self._http_server.shutdown()
+            self._http_server.server_close()
         if self._https_server is not None:
             self._https_server.shutdown()
+            self._https_server.server_close()
         if self._dns_server is not None:
             self._dns_server.stop()
+            self._dns_server.server.server_close()
         if self._dns_tcp_server is not None:
             self._dns_tcp_server.stop()
+            self._dns_tcp_server.server.server_close()
 
     def serve_forever(self, banner: IO[str] | None = sys.stderr) -> None:
         self.start()

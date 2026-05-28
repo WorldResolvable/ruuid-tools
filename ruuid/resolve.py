@@ -858,7 +858,14 @@ def fetch_url_body(uri: str, *, nameserver: str | None = None,
                 request, timeout=timeout, context=ssl_ctx
             ) as resp:
                 return resp.read()
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            # An HTTPError is itself a response object backed by a temp
+            # file; dropping it unclosed leaks that file (a ResourceWarning
+            # "Implicitly cleaning up <HTTPError ...>" under -W error).
+            # Plain URLErrors have no body and no close().
+            close = getattr(e, "close", None)
+            if callable(close):
+                close()
             return None
     ssl_ctx = _demo_ssl_context() if scheme == "https" else None
 
@@ -886,6 +893,7 @@ def fetch_url_body(uri: str, *, nameserver: str | None = None,
 
     request_headers = dict(extra_headers)
     request_headers["Host"] = host_header
+    conn = None
     try:
         if scheme == "https":
             conn = _PinnedHTTPSConnection(
@@ -922,6 +930,8 @@ def fetch_url_body(uri: str, *, nameserver: str | None = None,
         conn.close()
         return body
     except (OSError, http.client.HTTPException, TimeoutError) as e:
+        if conn is not None:
+            conn.close()
         if trace is not None:
             trace.append({"url": uri, "error": str(e) or type(e).__name__})
         return None

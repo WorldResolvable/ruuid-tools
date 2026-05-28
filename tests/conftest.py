@@ -99,7 +99,12 @@ class FakeNS:
         self._add(name, "TXT", ttl, dnslib.TXT(text.encode()))
 
     def stop(self) -> None:
+        # dnslib's DNSServer.stop() only calls shutdown() on the
+        # underlying socketserver; it never closes the listening
+        # socket, which leaks an unclosed UDP socket (a ResourceWarning
+        # under -W error). Close it explicitly.
         self._server.stop()
+        self._server.server.server_close()
 
     # --- internals ---
 

@@ -411,7 +411,12 @@ def _urllib_fetcher(url, *, headers=None, trace=None):
     try:
         with urllib.request.urlopen(req, timeout=2) as resp:
             return resp.read()
-    except (urllib.error.URLError, urllib.error.HTTPError):
+    except urllib.error.URLError as e:
+        # HTTPError (a URLError subclass) is a temp-file-backed response;
+        # close it so its finalizer doesn't emit a ResourceWarning.
+        close = getattr(e, "close", None)
+        if callable(close):
+            close()
         return None
 
 
