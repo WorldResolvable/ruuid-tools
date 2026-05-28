@@ -24,11 +24,11 @@ recursive resolvers return minimal answers to ANY meta-queries
 (Cloudflare and others synthesise a single HINFO), so ANY isn't
 reliable on the public Internet.
 
-Registry-phase pluggability: callers select a transport by
-constructing one of `Resolver` (DNS over UDP/TCP), `DoHRegistry`
-(DNS over HTTPS per RFC 8484), or `HttpRegistry` (the spec's
-HTTP-API registry form). `build_registry(url, nameserver=...)`
-parses a CLI-style URL and returns the right transport.
+Registry-phase pluggability: `Resolver` runs the registry protocol
+over a `Transport` — `DnsTransport` (DNS over UDP/TCP) or
+`DohTransport` (DNS over HTTPS per RFC 8484), or any caller-supplied
+`Transport`. `_build_resolver(url)` parses a CLI-style URL and returns
+a `Resolver` wired to the right transport, with system-DNS failover.
 
 Document/referent phase: `fetch_url_body` and `fetch_document` are
 the HTTP fetchers used by the CLI; both honour a `--nameserver`
@@ -51,7 +51,7 @@ import urllib.parse
 import urllib.request
 from functools import partial
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Iterable, Protocol, runtime_checkable
 
 import dns.exception
 import dns.message
@@ -315,12 +315,54 @@ def synthesise_ruuid_document(
     }
 
 
-class Resolver:
-    """RUUID DNS resolver, wrapping a `dns.resolver.Resolver`.
+@runtime_checkable
+class Transport(Protocol):
+    """RUUID-free (pseudo-)DNS query plumbing used by `Resolver`.
 
-    Performs the DNS-only portion of the pipeline: anchor → domain →
-    UUID-document URI. Fetching the UUID document and applying its
-    per-class `referent_uri_template` are the caller's responsibility.
+    A transport performs one lookup and returns the records as
+    normalized Python values. It carries no knowledge of RUUIDs, the
+    `_uuid.<domain>` name, or the `v=ruuid1 ` convention — that all
+    lives in `Resolver`. `query(name, rrtype)` returns:
+
+      - "PTR" -> list[str]                  target names (trailing dot stripped)
+      - "URI" -> list[tuple[int, int, str]] (priority, weight, target)
+      - "TXT" -> list[str]                  each record's joined text
+
+    It returns an empty list when the name has no records of that type
+    (NODATA / NXDOMAIN), and raises `dns.exception.DNSException` on a
+    transport-level failure (timeout, refused, SERVFAIL) so the caller
+    can fail over. Any object with this method — including a test
+    double — is a usable transport.
+    """
+
+    def query(self, name: str, rrtype: str) -> list: ...
+
+
+def _normalize_records(rrtype: str, rdatas) -> list:
+    """Turn dnspython rdata into the transport-neutral form (see `Transport`)."""
+    out: list = []
+    for r in rdatas:
+        if rrtype == "PTR":
+            out.append(str(r.target).rstrip("."))
+        elif rrtype == "URI":
+            target = r.target
+            out.append((
+                r.priority, r.weight,
+                target.decode() if isinstance(target, bytes) else str(target),
+            ))
+        elif rrtype == "TXT":
+            out.append(b"".join(r.strings).decode("utf-8", errors="replace"))
+        else:
+            out.append(r)
+    return out
+
+
+class DnsTransport:
+    """`Transport` over UDP/TCP DNS, via dnspython.
+
+    `nameservers=None` uses the system resolver configuration; pass an
+    explicit list (and `port`) to target a specific server. `lifetime`
+    is the total per-query timeout in seconds.
     """
 
     def __init__(
@@ -336,6 +378,97 @@ class Resolver:
             self._r.port = port
         self._r.lifetime = lifetime
 
+    def query(self, name: str, rrtype: str) -> list:
+        try:
+            answer = self._r.resolve(name, rrtype)
+        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+            return []
+        return _normalize_records(rrtype, answer)
+
+
+class DohTransport:
+    """`Transport` over DNS-over-HTTPS (RFC 8484).
+
+    Same queries as `DnsTransport`, carried as wire-format DNS messages
+    over an HTTPS POST to the DoH endpoint `url`. `verify` is True
+    (system trust store), False (no verification), or a path to a CA
+    file. Implemented on stdlib `urllib` rather than `dns.query.https`
+    so the `verify` knob can be threaded through without pulling in
+    httpx / aioquic; the demo anchor presents a self-signed cert.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        verify: bool | str = True,
+        timeout: float = 5.0,
+    ) -> None:
+        self.url = url
+        self._verify = verify
+        self._timeout = timeout
+
+    def query(self, name: str, rrtype: str) -> list:
+        resp = self._doh_query(name, rrtype)
+        want = dns.rdatatype.from_text(rrtype)
+        rdatas: list = []
+        for rrset in resp.answer:
+            if rrset.rdtype == want:
+                rdatas.extend(rrset)
+        return _normalize_records(rrtype, rdatas)
+
+    def _doh_query(self, qname: str, rdtype: str):
+        import ssl as _ssl
+        import urllib.request as _ur
+        q = dns.message.make_query(qname, rdtype)
+        body = q.to_wire()
+        if self._verify is False:
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+        elif isinstance(self._verify, str):
+            ctx = _ssl.create_default_context(cafile=self._verify)
+        else:
+            ctx = _ssl.create_default_context()
+        req = _ur.Request(
+            self.url, data=body,
+            headers={
+                "Content-Type": "application/dns-message",
+                "Accept": "application/dns-message",
+            },
+        )
+        with _ur.urlopen(req, timeout=self._timeout, context=ctx) as resp:
+            wire = resp.read()
+        return dns.message.from_wire(wire)
+
+
+class Resolver:
+    """RUUID resolver: anchor → domain → UUID-document URI.
+
+    Owns the registry-phase protocol — reverse-zone naming, the PTR
+    lookup, the `_uuid.<domain>` URI/TXT lookup, the `v=ruuid1 ` prefix,
+    and the well-known default — and delegates the actual queries to a
+    `Transport`. Pass any `Transport` (`DnsTransport`, `DohTransport`,
+    or your own). For convenience, the DNS keyword arguments build a
+    `DnsTransport` when no `transport` is given. Fetching the UUID
+    document and applying its templates are the caller's job (see
+    `resolve_referent_uri` / `resolve_ruuid`).
+    """
+
+    def __init__(
+        self,
+        transport: "Transport | None" = None,
+        *,
+        nameservers: Iterable[str] | None = None,
+        port: int = 53,
+        lifetime: float = 5.0,
+    ) -> None:
+        if transport is None:
+            transport = DnsTransport(
+                nameservers=nameservers, port=port, lifetime=lifetime,
+            )
+        self._transport = transport
+
     # --- Individual resolution steps -------------------------------------
 
     def reverse_dns_name(self, ruuid: RUUID) -> str:
@@ -343,14 +476,13 @@ class Resolver:
 
     def resolve_domain(self, ruuid: RUUID,
                        trace: list | None = None) -> str:
-        name = self.reverse_dns_name(ruuid)
-        try:
-            answer = self._r.resolve(name, "PTR")
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN) as e:
+        name = reverse_dns_name(ruuid)
+        domains = self._transport.query(name, "PTR")
+        if not domains:
             if trace is not None:
                 trace.append({"qtype": "PTR", "name": name, "error": "no record"})
-            raise ResolveError(f"no PTR record at {name}") from e
-        domain = str(answer[0].target).rstrip(".")
+            raise ResolveError(f"no PTR record at {name}")
+        domain = domains[0]
         if trace is not None:
             trace.append({"qtype": "PTR", "name": name, "answer": domain})
         return domain
@@ -369,19 +501,17 @@ class Resolver:
             or default_uuid_document_uri(domain)
         )
 
-    # --- Convenience -----------------------------------------------------
-
     def resolve(self, ruuid: RUUID, trace: list | None = None) -> dict:
-        """Run the DNS pipeline (PTR + URI/TXT at _uuid.<domain>).
+        """Run the registry phase (PTR + URI/TXT at _uuid.<domain>).
 
-        If `trace` is supplied, each DNS hop appends a dict to it:
+        If `trace` is supplied, each hop appends a dict to it:
           - PTR:     {"qtype": "PTR", "name": ..., "answer": domain}
           - URI:     {"qtype": "URI", "name": ..., "uri": doc_uri}
           - TXT:     {"qtype": "TXT", "name": ..., "uri": doc_uri}
           - default: {"qtype": "default", "name": ..., "uri": doc_uri}
           - failure: {"qtype": ..., "name": ..., "error": ...}
         """
-        reverse = self.reverse_dns_name(ruuid)
+        reverse = reverse_dns_name(ruuid)
         domain = self.resolve_domain(ruuid, trace=trace)
         doc_name = f"_uuid.{domain}"
         doc_uri = self._query_for_uri(doc_name, trace=trace)
@@ -411,34 +541,29 @@ class Resolver:
         silently lose published records and force the resolver to the
         default doc URI. Type-specific queries are honoured normally.
         """
-        qname = dns.name.from_text(name)
-
         # 1. URI records.
         try:
-            answer = self._r.resolve(qname, "URI")
+            uris = self._transport.query(name, "URI")
         except dns.exception.DNSException as e:
             if trace is not None:
                 trace.append({"qtype": "URI", "name": name,
                               "error": str(e) or type(e).__name__})
-        else:
-            best = min(answer, key=lambda r: (r.priority, -r.weight))
-            target = best.target
-            uri = target.decode() if isinstance(target, bytes) else str(target)
+            uris = []
+        if uris:
+            priority, weight, target = min(uris, key=lambda r: (r[0], -r[1]))
             if trace is not None:
-                trace.append({"qtype": "URI", "name": name, "uri": uri})
-            return uri
+                trace.append({"qtype": "URI", "name": name, "uri": target})
+            return target
 
         # 2. TXT records with the v=ruuid1 prefix.
         try:
-            answer = self._r.resolve(qname, "TXT")
+            txts = self._transport.query(name, "TXT")
         except dns.exception.DNSException as e:
             if trace is not None:
                 trace.append({"qtype": "TXT", "name": name,
                               "error": str(e) or type(e).__name__})
             return None
-
-        for rr in answer:
-            data = b"".join(rr.strings).decode("utf-8", errors="replace")
+        for data in txts:
             if data.startswith(TXT_PREFIX):
                 uri = data[len(TXT_PREFIX):].strip()
                 if trace is not None:
@@ -450,240 +575,6 @@ class Resolver:
             trace.append({"qtype": "TXT", "name": name,
                           "error": "no v=ruuid1 record"})
         return None
-
-
-Fetcher = Callable[..., "bytes | None"]
-"""Callable signature for an HTTP fetcher passed to HttpRegistry.
-
-Called as `fetcher(url, *, headers, trace) -> bytes | None`. Should
-return the response body on 200, or None on any failure (404, network
-error, non-JSON). The CLI provides a fetcher backed by its
-nameserver-aware urllib helpers; library users may supply a simpler
-urllib.request-based fetcher."""
-
-
-class HttpRegistry:
-    """RUUID registry endpoint reached over HTTP(S).
-
-    Issues a single HTTPS GET against the configured registry URL and
-    returns the `(reverse_name, domain, uuid_document_uri)` triple
-    parsed from the registry's JSON response. The address-form URL
-    (`/<address>.uuid`) is used — it's the natural form for HTTP
-    consumers and works against any registry per the spec.
-
-    The TLS / TCP / hostname-resolution mechanics are delegated to a
-    caller-supplied `fetcher` callable, keeping this module's HTTP
-    surface minimal. The CLI passes a fetcher built from its
-    nameserver-aware urllib helpers; library users may pass a thinner
-    fetcher built on plain `urllib.request`.
-    """
-
-    def __init__(self, base_url: str, *, fetcher: Fetcher) -> None:
-        self.base_url = base_url.rstrip("/")
-        self._fetch = fetcher
-
-    def reverse_dns_name(self, ruuid: RUUID) -> str:
-        return reverse_dns_name(ruuid)
-
-    def resolve(self, ruuid: RUUID, trace: list | None = None) -> dict:
-        """Run the HTTP-API registry pipeline.
-
-        Returns `{reverse_name, domain, uuid_document_uri}`. Raises
-        ResolveError when the registry returns 404, an unparseable
-        body, or a body missing required fields. The trace, if
-        supplied, gets one entry per HTTP hop (appended by the
-        fetcher) plus a `{"qtype": "REGISTRY", ...}` summary on a
-        bad/malformed response.
-        """
-        reverse = reverse_dns_name(ruuid)
-        address = str(ruuid.ip_network.network_address)
-        url = f"{self.base_url}/{address}.uuid"
-        body = self._fetch(
-            url,
-            headers={"Accept": "application/json"},
-            trace=trace,
-        )
-        if body is None:
-            if trace is not None:
-                trace.append({"qtype": "REGISTRY", "url": url,
-                              "error": "no response body"})
-            raise ResolveError(
-                f"registry endpoint did not return a usable response at {url}"
-            )
-        try:
-            payload = json.loads(body)
-            domain = payload["domain"]
-            doc_uri = payload["uuid_document_uri"]
-        except (json.JSONDecodeError, TypeError) as e:
-            if trace is not None:
-                trace.append({"qtype": "REGISTRY", "url": url,
-                              "error": f"malformed JSON: {e}"})
-            raise ResolveError(
-                f"registry response at {url} is not valid JSON: {e}"
-            ) from e
-        except KeyError as e:
-            if trace is not None:
-                trace.append({"qtype": "REGISTRY", "url": url,
-                              "error": f"missing field: {e}"})
-            raise ResolveError(
-                f"registry response at {url} missing required field {e}"
-            ) from e
-        return {
-            "reverse_name": reverse,
-            "domain": domain,
-            "uuid_document_uri": doc_uri,
-        }
-
-
-class DoHRegistry:
-    """RUUID registry endpoint reached via DoH (RFC 8484).
-
-    Wire-level semantics are identical to the DNS-protocol endpoint:
-    one PTR query for the reverse-DNS name, one URI query at
-    `_uuid.<domain>` (falling back to TXT). Only the transport
-    differs -- queries and replies are encoded DNS messages exchanged
-    over an HTTPS POST to the DoH endpoint.
-
-    Implemented directly on `dns.query.https()` rather than via
-    `dns.resolver.Resolver(nameservers=['https://...'])` so the TLS
-    `verify` path can be threaded through; the demo anchor uses a
-    self-signed cert that the system trust store doesn't accept by
-    default, and the high-level resolver doesn't expose a per-call
-    verify knob.
-    """
-
-    def __init__(
-        self,
-        url: str,
-        *,
-        verify: bool | str = True,
-        timeout: float = 5.0,
-    ) -> None:
-        self.url = url
-        self._verify = verify
-        self._timeout = timeout
-
-    def reverse_dns_name(self, ruuid: RUUID) -> str:
-        return reverse_dns_name(ruuid)
-
-    def _doh_query(self, qname: str, rdtype: str):
-        """POST a DNS message to the DoH endpoint and parse the reply.
-
-        Implemented directly on stdlib `urllib` rather than via
-        `dns.query.https` because the latter relies on `httpx` /
-        `aioquic` for HTTP/1.1 / HTTP/2 / HTTP/3 transport and those
-        aren't part of dnspython's base install. Stdlib urllib is
-        sufficient: DoH POST is just an HTTPS POST with a wire-format
-        DNS message body and the right Content-Type.
-        """
-        import ssl as _ssl
-        import urllib.request as _ur
-        q = dns.message.make_query(qname, rdtype)
-        body = q.to_wire()
-        if self._verify is False:
-            ctx = _ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = _ssl.CERT_NONE
-        elif isinstance(self._verify, str):
-            ctx = _ssl.create_default_context(cafile=self._verify)
-        else:
-            ctx = _ssl.create_default_context()
-        req = _ur.Request(
-            self.url, data=body,
-            headers={
-                "Content-Type": "application/dns-message",
-                "Accept": "application/dns-message",
-            },
-        )
-        with _ur.urlopen(req, timeout=self._timeout, context=ctx) as resp:
-            wire = resp.read()
-        return dns.message.from_wire(wire)
-
-    def resolve_domain(self, ruuid: RUUID,
-                       trace: list | None = None) -> str:
-        name = self.reverse_dns_name(ruuid)
-        try:
-            resp = self._doh_query(name, "PTR")
-        except dns.exception.DNSException as e:
-            if trace is not None:
-                trace.append({"qtype": "PTR", "name": name,
-                              "error": str(e) or type(e).__name__})
-            raise ResolveError(f"no PTR record at {name}") from e
-        for rrset in resp.answer:
-            if rrset.rdtype == dns.rdatatype.PTR:
-                domain = str(rrset[0].target).rstrip(".")
-                if trace is not None:
-                    trace.append({
-                        "qtype": "PTR", "name": name, "answer": domain,
-                    })
-                return domain
-        if trace is not None:
-            trace.append({"qtype": "PTR", "name": name,
-                          "error": "no PTR record"})
-        raise ResolveError(f"no PTR record at {name}")
-
-    def _query_for_uri(self, name: str,
-                       trace: list | None = None) -> str | None:
-        # URI first.
-        try:
-            resp = self._doh_query(name, "URI")
-        except dns.exception.DNSException as e:
-            if trace is not None:
-                trace.append({"qtype": "URI", "name": name,
-                              "error": str(e) or type(e).__name__})
-        else:
-            for rrset in resp.answer:
-                if rrset.rdtype == dns.rdatatype.URI:
-                    best = min(rrset, key=lambda r: (r.priority, -r.weight))
-                    target = best.target
-                    uri = (target.decode() if isinstance(target, bytes)
-                           else str(target))
-                    if trace is not None:
-                        trace.append({"qtype": "URI", "name": name,
-                                      "uri": uri})
-                    return uri
-        # TXT fallback.
-        try:
-            resp = self._doh_query(name, "TXT")
-        except dns.exception.DNSException as e:
-            if trace is not None:
-                trace.append({"qtype": "TXT", "name": name,
-                              "error": str(e) or type(e).__name__})
-            return None
-        for rrset in resp.answer:
-            if rrset.rdtype == dns.rdatatype.TXT:
-                for rr in rrset:
-                    data = b"".join(rr.strings).decode(
-                        "utf-8", errors="replace",
-                    )
-                    if data.startswith(TXT_PREFIX):
-                        uri = data[len(TXT_PREFIX):].strip()
-                        if trace is not None:
-                            trace.append({"qtype": "TXT", "name": name,
-                                          "uri": uri})
-                        return uri
-        if trace is not None:
-            trace.append({"qtype": "TXT", "name": name,
-                          "error": "no v=ruuid1 record"})
-        return None
-
-    def resolve(self, ruuid: RUUID, trace: list | None = None) -> dict:
-        reverse = self.reverse_dns_name(ruuid)
-        domain = self.resolve_domain(ruuid, trace=trace)
-        doc_name = f"_uuid.{domain}"
-        doc_uri = self._query_for_uri(doc_name, trace=trace)
-        if doc_uri is None:
-            doc_uri = default_uuid_document_uri(domain)
-            if trace is not None:
-                trace.append({
-                    "qtype": "default", "name": doc_name,
-                    "uri": doc_uri,
-                })
-        return {
-            "reverse_name": reverse,
-            "domain": domain,
-            "uuid_document_uri": doc_uri,
-        }
 
 
 # --- Hostname-to-IP helper ------------------------------------------------
@@ -986,7 +877,6 @@ def resolve_ruuid(
             None                       system DNS resolver
             dns://[host[:port]]        DNS-protocol via host/port
             doh://host[:port][/path]   RFC 8484 DoH endpoint
-            http(s)://host[/path]      HTTP-API registry endpoint
             The registry value only governs the registry-phase
             lookup. HTTP fetches of the UUID document and referent
             URI always use the system DNS resolver — the system is
@@ -1034,7 +924,7 @@ def resolve_ruuid(
     prev_registry = getattr(_resolve_context, "registry", None)
     _resolve_context.registry = registry
     try:
-        registry_obj = _build_registry(registry)
+        registry_obj = _build_resolver(registry)
         result = registry_obj.resolve(ruuid, trace=registry_trace)
         result["network"] = ruuid.ip_network
 
@@ -1101,15 +991,16 @@ def _parse_doc(body: bytes | None) -> dict | None:
 DEFAULT_REGISTRY_URL = "dns://127.0.0.1:53"
 
 
-class FailoverRegistry:
-    """Try one registry; fall back to a second if the first fails.
+class FailoverResolver:
+    """Try one resolver; fall back to a second if the first fails.
 
-    Wraps a `primary` and a `fallback` registry. The primary is tried
-    first; on any resolution failure (ResolveError, DNS-layer errors
-    like timeouts and `NoNameservers`, or socket-level `OSError`s such
-    as connection refused), the fallback is tried. The primary's
-    failure is recorded in the trace as a `failover` entry so verbose
-    output shows what happened.
+    Wraps a `primary` and a `fallback` resolver (anything with a
+    `resolve(ruuid, trace=None)` method). The primary is tried first;
+    on any resolution failure (ResolveError, DNS-layer errors like
+    timeouts and `NoNameservers`, or socket-level `OSError`s such as
+    connection refused), the fallback is tried. The primary's failure
+    is recorded in the trace as a `failover` entry so verbose output
+    shows what happened.
 
     This is the wrapper that makes `ruuid resolve UUID` work in the
     `ruuid anchor`-then-`ruuid resolve` workflow: the primary points at
@@ -1143,13 +1034,12 @@ class FailoverRegistry:
                 ) from e2
 
 
-def _build_primary_registry(url: str):
-    """Parse a registry URL into a single transport (no failover wrap).
+def _build_primary_resolver(url: str):
+    """Parse a registry URL into a single `Resolver` (no failover wrap).
 
-    Supported schemes: `dns://HOST[:PORT]`, `doh://HOST[:PORT][/PATH]`,
-    `http(s)://HOST[/PATH]`. Returns one of `Resolver`, `DoHRegistry`,
-    `HttpRegistry`. Raises ValueError on unparseable input or
-    unsupported scheme.
+    Supported schemes: `dns://HOST[:PORT]` (a `DnsTransport`) and
+    `doh://HOST[:PORT][/PATH]` (a `DohTransport`). Raises ValueError on
+    unparseable input or unsupported scheme.
     """
     if url.startswith("dns:"):
         netloc = url[6:] if url.startswith("dns://") else ""
@@ -1177,19 +1067,16 @@ def _build_primary_registry(url: str):
             https_url = parsed.geturl()
         cert = _find_cert()
         verify: bool | str = str(cert) if cert is not None else True
-        return DoHRegistry(https_url, verify=verify, timeout=2.0)
-
-    if url.startswith("https://") or url.startswith("http://"):
-        return HttpRegistry(url, fetcher=fetch_url_body)
+        return Resolver(DohTransport(https_url, verify=verify, timeout=2.0))
 
     raise ValueError(
         f"unsupported scheme in {url!r}; "
-        "use dns://, doh://, or https://"
+        "use dns:// or doh://"
     )
 
 
-def _build_registry(url: str | None):
-    """Build a registry transport with system-DNS failover.
+def _build_resolver(url: str | None):
+    """Build a `Resolver` with system-DNS failover.
 
     When `url` is None, the primary is `DEFAULT_REGISTRY_URL`
     (loopback DNS, matching the `ruuid anchor` default binding).
@@ -1197,6 +1084,6 @@ def _build_registry(url: str | None):
     succeeds for prefixes the primary doesn't know about (and for
     the no-anchor-running case).
     """
-    primary = _build_primary_registry(url or DEFAULT_REGISTRY_URL)
+    primary = _build_primary_resolver(url or DEFAULT_REGISTRY_URL)
     fallback = Resolver()
-    return FailoverRegistry(primary, fallback)
+    return FailoverResolver(primary, fallback)

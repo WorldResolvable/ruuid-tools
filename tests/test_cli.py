@@ -324,7 +324,7 @@ def test_parse_uses_registry_default(monkeypatch, test_ns, capsys):
     failover). Here we point the failover *fallback* (the system resolver)
     at the test NS by monkey-patching the default Resolver constructor,
     so the test exercises that the default code path actually goes
-    through FailoverRegistry without needing root or port 53."""
+    through FailoverResolver without needing root or port 53."""
     import dns.resolver
     from ruuid import RUUID
     from ruuid import resolve as resolve_mod

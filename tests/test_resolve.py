@@ -769,32 +769,79 @@ def test_full_pipeline_no_uuid_record_uses_default(test_ns, example_ruuid):
     )
 
 
-# --- _build_registry default + failover ----------------------------------
+# --- Transport seam: Resolver drives any query-shaped object -------------
 
-def test_build_registry_default_is_loopback_with_failover():
+class _FakeTransport:
+    """A `Transport` double: canned records keyed by (name, rrtype)."""
+
+    def __init__(self, records=None, fail=None):
+        self._records = records or {}
+        self._fail = set(fail or ())
+
+    def query(self, name, rrtype):
+        if (name, rrtype) in self._fail:
+            import dns.exception
+            raise dns.exception.Timeout
+        return list(self._records.get((name, rrtype), []))
+
+
+def test_resolver_drives_an_arbitrary_transport():
+    """A hand-rolled Transport double resolves end-to-end with no network."""
+    ru = RUUID.from_anchor("192.0.2.42", identifier=0x123456789ABC, type_id=0)
+    transport = _FakeTransport({
+        ("42.2.0.192.in-addr.arpa", "PTR"): ["example.com"],
+        ("_uuid.example.com", "URI"): [(10, 1, "https://example.com/doc.json")],
+    })
+    out = Resolver(transport).resolve(ru)
+    assert out == {
+        "reverse_name": "42.2.0.192.in-addr.arpa",
+        "domain": "example.com",
+        "uuid_document_uri": "https://example.com/doc.json",
+    }
+
+
+def test_resolver_falls_back_to_txt_then_default_over_a_transport():
+    ru = RUUID.from_anchor("192.0.2.42", identifier=1, type_id=0)
+    # No URI record; a TXT with the prefix wins.
+    transport = _FakeTransport({
+        ("42.2.0.192.in-addr.arpa", "PTR"): ["example.com"],
+        ("_uuid.example.com", "TXT"): ["v=ruuid1 https://example.com/from-txt"],
+    })
+    out = Resolver(transport).resolve(ru)
+    assert out["uuid_document_uri"] == "https://example.com/from-txt"
+
+
+def test_fake_transport_satisfies_the_transport_protocol():
+    from ruuid import Transport
+    assert isinstance(_FakeTransport(), Transport)
+
+
+# --- _build_resolver default + failover ----------------------------------
+
+def test_build_resolver_default_is_loopback_with_failover():
     """No --registry means: try dns://127.0.0.1:53, fall back to system."""
-    from ruuid.resolve import _build_registry, FailoverRegistry, Resolver
-    reg = _build_registry(None)
-    assert isinstance(reg, FailoverRegistry)
+    from ruuid.resolve import _build_resolver, FailoverResolver, Resolver
+    reg = _build_resolver(None)
+    assert isinstance(reg, FailoverResolver)
     assert isinstance(reg._primary, Resolver)
-    assert reg._primary._r.nameservers == ["127.0.0.1"]
-    assert reg._primary._r.port == 53
+    assert reg._primary._transport._r.nameservers == ["127.0.0.1"]
+    assert reg._primary._transport._r.port == 53
     # The fallback is a system Resolver (no override).
     assert isinstance(reg._fallback, Resolver)
 
 
-def test_build_registry_explicit_url_is_still_wrapped_with_failover():
+def test_build_resolver_explicit_url_is_still_wrapped_with_failover():
     """`--registry dns://1.2.3.4` keeps the system-DNS fallback."""
-    from ruuid.resolve import _build_registry, FailoverRegistry
-    reg = _build_registry("dns://1.2.3.4:5353")
-    assert isinstance(reg, FailoverRegistry)
-    assert reg._primary._r.nameservers == ["1.2.3.4"]
-    assert reg._primary._r.port == 5353
+    from ruuid.resolve import _build_resolver, FailoverResolver
+    reg = _build_resolver("dns://1.2.3.4:5353")
+    assert isinstance(reg, FailoverResolver)
+    assert reg._primary._transport._r.nameservers == ["1.2.3.4"]
+    assert reg._primary._transport._r.port == 5353
 
 
 def test_failover_primary_success_skips_fallback():
     """When primary succeeds, fallback is never consulted."""
-    from ruuid.resolve import FailoverRegistry
+    from ruuid.resolve import FailoverResolver
 
     expected = {"reverse_name": "x", "domain": "x", "uuid_document_uri": "x"}
 
@@ -806,14 +853,14 @@ def test_failover_primary_success_skips_fallback():
         def resolve(self, ruuid, trace=None):
             raise AssertionError("fallback must not run")
 
-    reg = FailoverRegistry(_Ok(), _Boom())
+    reg = FailoverResolver(_Ok(), _Boom())
     assert reg.resolve(RUUID.from_anchor("192.0.2.1", identifier=1)) == expected
 
 
 def test_failover_primary_failure_runs_fallback_and_traces_reason():
     """When primary raises ResolveError, fallback runs and the trace
     records a `failover` entry with the primary's failure reason."""
-    from ruuid.resolve import FailoverRegistry, ResolveError
+    from ruuid.resolve import FailoverResolver, ResolveError
 
     expected = {"reverse_name": "y", "domain": "y", "uuid_document_uri": "y"}
 
@@ -825,7 +872,7 @@ def test_failover_primary_failure_runs_fallback_and_traces_reason():
         def resolve(self, ruuid, trace=None):
             return expected
 
-    reg = FailoverRegistry(_Fail(), _Ok())
+    reg = FailoverResolver(_Fail(), _Ok())
     trace: list = []
     out = reg.resolve(
         RUUID.from_anchor("192.0.2.1", identifier=1), trace=trace,
@@ -840,7 +887,7 @@ def test_failover_primary_failure_runs_fallback_and_traces_reason():
 def test_failover_catches_dns_layer_errors():
     """DNS-layer exceptions (timeout, NoNameservers) also trigger failover,
     not just ResolveError."""
-    from ruuid.resolve import FailoverRegistry
+    from ruuid.resolve import FailoverResolver
     import dns.exception
 
     class _Timeout:
@@ -851,14 +898,14 @@ def test_failover_catches_dns_layer_errors():
         def resolve(self, ruuid, trace=None):
             return {"reverse_name": "z", "domain": "z", "uuid_document_uri": "z"}
 
-    reg = FailoverRegistry(_Timeout(), _Ok())
+    reg = FailoverResolver(_Timeout(), _Ok())
     out = reg.resolve(RUUID.from_anchor("192.0.2.1", identifier=1))
     assert out["domain"] == "z"
 
 
 def test_failover_catches_os_error():
     """Connection refused etc. (OSError) trigger failover."""
-    from ruuid.resolve import FailoverRegistry
+    from ruuid.resolve import FailoverResolver
 
     class _Refused:
         def resolve(self, ruuid, trace=None):
@@ -868,20 +915,20 @@ def test_failover_catches_os_error():
         def resolve(self, ruuid, trace=None):
             return {"reverse_name": "z", "domain": "z", "uuid_document_uri": "z"}
 
-    reg = FailoverRegistry(_Refused(), _Ok())
+    reg = FailoverResolver(_Refused(), _Ok())
     out = reg.resolve(RUUID.from_anchor("192.0.2.1", identifier=1))
     assert out["domain"] == "z"
 
 
 def test_failover_propagates_fallback_failure():
     """If both primary and fallback fail, the fallback's exception escapes."""
-    from ruuid.resolve import FailoverRegistry, ResolveError
+    from ruuid.resolve import FailoverResolver, ResolveError
 
     class _Fail:
         def __init__(self, msg): self.msg = msg
         def resolve(self, ruuid, trace=None):
             raise ResolveError(self.msg)
 
-    reg = FailoverRegistry(_Fail("primary"), _Fail("fallback"))
+    reg = FailoverResolver(_Fail("primary"), _Fail("fallback"))
     with pytest.raises(ResolveError, match="fallback"):
         reg.resolve(RUUID.from_anchor("192.0.2.1", identifier=1))

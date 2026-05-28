@@ -1,7 +1,8 @@
 from ruuid.core import RUUID, VERSION, VARIANT_RFC4122, SIXTOFOUR_PREFIX
 from ruuid.resolve import (
-    DoHRegistry,
-    HttpRegistry,
+    Transport,
+    DnsTransport,
+    DohTransport,
     Resolver,
     ResolveError,
     default_uuid_document_uri,
@@ -28,8 +29,9 @@ __all__ = [
     "SIXTOFOUR_PREFIX",
     "new_ruuid",
     "Resolver",
-    "HttpRegistry",
-    "DoHRegistry",
+    "Transport",
+    "DnsTransport",
+    "DohTransport",
     "ResolveError",
     "resolve_ruuid",
     "fetch_document",

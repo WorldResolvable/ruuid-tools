@@ -46,9 +46,6 @@ ru=$(ruuid generate 192.0.2.42 0xABCDEF012345 --type 1)
 heading "#1A  IPv4 tag, DNS registry"
 ruuid resolve --verbose $ru
 
-heading "#1B IPv4 tag, HTTPS registry"
-ruuid resolve --verbose --registry https://demo.example.com/ $ru
-
 heading "#1C IPv4 tag, DoH registry"
 ruuid resolve --verbose --registry doh://demo.example.com/dns-query $ru
 
@@ -85,6 +82,3 @@ ruuid resolve --verbose $(ruuid generate 198.51.100.102 0xABCDEF012345 --type 1)
 ru=$(ruuid generate 203.0.113.99 0x5300CAFEBEEF --type 1)
 heading "#10A  UUID document + referent homed in an S3 bucket"
 ruuid resolve --verbose --registry doh://127.0.0.1/dns-query $ru
-
-heading "#10B registry-phase lookup also homed in the S3 bucket"
-ruuid resolve --verbose --registry http://ruuid.s3-website-us-east-1.amazonaws.com/ $ru

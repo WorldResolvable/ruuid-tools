@@ -336,9 +336,6 @@ class Anchor:
         self._documents = self._build_documents()
         self._referent_routes = self._build_referent_routes()
         self._host_to_issuer = self._build_host_to_issuer()
-        self._issuer_by_ptr = {
-            _canon(iss.ptr_name): iss for iss in self.issuers
-        }
 
         self._dns_server: DNSServer | None = None
         self._dns_tcp_server: DNSServer | None = None
@@ -701,30 +698,6 @@ class Anchor:
         anchor = self
 
         class _Handler(BaseHTTPRequestHandler):
-            # Registry HTTP API: two equivalent URL forms for the
-            # address-to-domain lookup. Both return the same JSON
-            # {reverse_dns_name, domain, uuid_document_uri} for the
-            # issuer whose anchor matches. Independent of Host header
-            # because the registry-base URL is operator-chosen and the
-            # anchor doesn't know what authority it's been wired up under.
-            #
-            #   /<reverse-dns-name>   e.g. /42.2.0.192.in-addr.arpa
-            #     -- mirrors the DNS PTR key; useful for tooling that
-            #        already has a reverse-DNS name (e.g. a transcoder
-            #        bridging DNS and HTTP registries).
-            #   /<address>.uuid      e.g. /192.0.2.42.uuid or
-            #                             /2001:db8:abcd:1234::1.uuid
-            #     -- the natural HTTP-friendly form. The reverse-DNS
-            #        convention is a DNS-zone-delegation artefact that
-            #        an HTTP registry doesn't have to inherit.
-            _REGISTRY_PTR_PATH = re.compile(
-                r"^/([^/]+\.(?:in-addr|ip6)\.arpa)/?$",
-                re.IGNORECASE,
-            )
-            _REGISTRY_ADDR_PATH = re.compile(
-                r"^/(.+)\.uuid/?$",
-                re.IGNORECASE,
-            )
             # RFC 8484 DoH endpoint. The path is conventionally
             # /dns-query but any path the operator chose is fine -- the
             # resolver targets the URL they configured. We accept the
@@ -752,21 +725,6 @@ class Anchor:
                     s.close()
                 self._respond(
                     200, "application/dns-message", reply,
-                )
-
-            def _serve_registry(self, reverse_name: str) -> None:
-                iss = anchor._issuer_by_ptr.get(reverse_name)
-                if iss is None:
-                    self.send_error(404, "Not Found")
-                    return
-                payload = {
-                    "reverse_dns_name": reverse_name,
-                    "domain": iss.domain,
-                    "uuid_document_uri": anchor._doc_url(iss),
-                }
-                self._respond(
-                    200, "application/json",
-                    json.dumps(payload, indent=2).encode("utf-8"),
                 )
 
             def do_POST(self) -> None:  # noqa: N802
@@ -804,20 +762,6 @@ class Anchor:
                         self.send_error(400, "Invalid ?dns encoding")
                         return
                     self._serve_doh(body)
-                    return
-
-                m = self._REGISTRY_PTR_PATH.match(self.path)
-                if m:
-                    self._serve_registry(_canon(m.group(1)))
-                    return
-                m = self._REGISTRY_ADDR_PATH.match(self.path)
-                if m:
-                    try:
-                        reverse_name = _reverse_ptr_name(m.group(1))
-                    except (ValueError, IndexError):
-                        self.send_error(404, "Not Found")
-                        return
-                    self._serve_registry(reverse_name)
                     return
 
                 # If Host: matches any host the issuer is reachable at

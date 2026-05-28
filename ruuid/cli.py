@@ -522,9 +522,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "DNS resolver. Forms: 'dns://HOST[:PORT]' for a "
              "DNS-protocol endpoint (also used for downstream HTTP "
              "hostname resolution); 'doh://HOST[:PORT][/PATH]' for "
-             "RFC 8484 DoH (path defaults to /dns-query); "
-             "'https://HOST[/PATH]' for an HTTP API endpoint "
-             "returning the prefix-to-domain binding as JSON.",
+             "RFC 8484 DoH (path defaults to /dns-query).",
     )
     r.add_argument(
         "--follow", nargs="?", const="referent", default=None,
