@@ -346,6 +346,68 @@ def test_resolve_referent_uri_falls_back_when_document_is_none():
     )
 
 
+# --- service id may be any URI ending in the type fragment ---------------
+
+def test_resolve_referent_uri_matches_full_uri_id_fragment():
+    """A service `id` of `<uri>#<type>` selects on the fragment, not the
+    whole string."""
+    r = RUUID.from_anchor("192.0.2.1", identifier=1, type_id=42)
+    document = {
+        "service": [
+            {
+                "id": "https://example.com/.well-known/uuid-document.json#42",
+                "type": "CowTag",
+                "serviceEndpoint": "https://example.com/cowtag/<identifier>",
+            },
+        ],
+    }
+    assert (
+        resolve_referent_uri(r, domain="example.com", document=document)
+        == "https://example.com/cowtag/000000000001"
+    )
+
+
+def test_resolve_referent_uri_matches_full_uri_id_for_type_zero_default():
+    r = RUUID.from_anchor("192.0.2.1", identifier=1, type_id=99)
+    document = {
+        "service": [
+            {
+                "id": "https://example.com/svc#0",
+                "serviceEndpoint": "https://example.com/r/<type>/<identifier>",
+            },
+        ],
+    }
+    assert (
+        resolve_referent_uri(r, domain="example.com", document=document)
+        == "https://example.com/r/99/000000000001"
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "https://example.com/svc",   # no fragment
+        "#tag",                       # non-numeric fragment
+        "https://example.com/svc#x",  # non-numeric fragment on a URI
+        "#1024",                      # out of the 0..1023 range
+        "#-1",                        # negative
+        None,                          # absent id
+    ],
+)
+def test_resolve_referent_uri_ignores_entries_without_numeric_fragment(bad_id):
+    """Entries whose `id` has no numeric fragment in 0..1023 are skipped,
+    so resolution falls through to the spec-wide default template."""
+    r = RUUID.from_anchor("192.0.2.1", identifier=1, type_id=42)
+    entry = {"serviceEndpoint": "https://example.com/should-not-be-used/<identifier>"}
+    if bad_id is not None:
+        entry["id"] = bad_id
+    document = {"service": [entry]}
+    assert (
+        resolve_referent_uri(r, domain="example.com", document=document)
+        == "https://example.com/42/000000000001"
+    )
+
+
 # --- class-0 (issuer-wide) fallback --------------------------------------
 
 def test_type_zero_template_is_used_when_request_class_missing():

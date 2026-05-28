@@ -176,6 +176,24 @@ def substitute_template(
     return substituted
 
 
+def _service_type_fragment(svc_id: object) -> int | None:
+    """Return the numeric type fragment of a service `id`, or None.
+
+    A service `id` may be a bare fragment (`"#42"`) or any URI ending
+    in one (`"https://example.com/svc#42"`); per RFC 3986 the fragment
+    is the text after the first `#`. An `id` that is absent, carries no
+    fragment, has a non-numeric fragment, or one outside 0..1023 is not
+    selectable and yields None.
+    """
+    if not isinstance(svc_id, str) or "#" not in svc_id:
+        return None
+    fragment = urllib.parse.urldefrag(svc_id).fragment
+    if not (fragment.isascii() and fragment.isdigit()):
+        return None
+    value = int(fragment)
+    return value if 0 <= value <= 1023 else None
+
+
 def _select_service_entry(
     document: dict | None,
     type_id: int,
@@ -184,26 +202,31 @@ def _select_service_entry(
 
     Returns `(entry, template)`. Selection order:
 
-    1. The entry whose `id` matches `"#<type>"`.
-    2. The entry whose `id` is `"#0"` — the issuer-wide default.
+    1. The entry whose `id` fragment is `<type>`.
+    2. The entry whose `id` fragment is `0` — the issuer-wide default.
     3. None, with `DEFAULT_REFERENT_URI_TEMPLATE` — the spec-wide
        default, used when neither is available (including the
        no-document case).
 
-    Entries without a string `serviceEndpoint` are skipped at every
-    level.
+    Entries without a string `serviceEndpoint`, or whose `id` lacks a
+    numeric fragment in 0..1023, are skipped at every level. When two
+    entries share a fragment the first in document order wins.
     """
     services = (document or {}).get("service")
     if not isinstance(services, list):
         return None, DEFAULT_REFERENT_URI_TEMPLATE
-    by_id = {
-        svc.get("id"): svc for svc in services
-        if isinstance(svc, dict)
-        and isinstance(svc.get("serviceEndpoint"), str)
-    }
-    for key in (f"#{type_id}", "#0"):
-        if key in by_id:
-            entry = by_id[key]
+    by_type: dict[int, dict] = {}
+    for svc in services:
+        if not isinstance(svc, dict):
+            continue
+        if not isinstance(svc.get("serviceEndpoint"), str):
+            continue
+        fragment = _service_type_fragment(svc.get("id"))
+        if fragment is not None:
+            by_type.setdefault(fragment, svc)
+    for key in (type_id, 0):
+        entry = by_type.get(key)
+        if entry is not None:
             return entry, entry["serviceEndpoint"]
     return None, DEFAULT_REFERENT_URI_TEMPLATE
 
@@ -218,13 +241,12 @@ def resolve_referent_uri(
     """Construct the referent URI for an RUUID per the spec.
 
     The UUID document is a W3C CID document. Per-class referent
-    templates live in `service` entries: the entry's `id` is a
-    fragment URI of the form `"#<class-id>"` (e.g. `"#1"`), and its
-    `serviceEndpoint` carries the template. The entry's `type` (a
-    required CID-service property) carries the class's human-readable
-    name (e.g., "tag", "sensor"), but the resolver doesn't use it —
-    only `id` and `serviceEndpoint`. Template selection follows
-    `_select_service_entry`.
+    templates live in `service` entries: the entry's `id` carries a
+    numeric fragment `<class-id>` (e.g. `"#1"`, or any URI ending in
+    `"#1"`), and its `serviceEndpoint` carries the template. The
+    entry's `type` (a required CID-service property) is not used by the
+    resolver — only the `id` fragment and `serviceEndpoint`. Template
+    selection follows `_select_service_entry`.
 
     `document_uri` (the URI the document was fetched from) is the base
     for resolving relative serviceEndpoints; see `substitute_template`.
