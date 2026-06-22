@@ -818,16 +818,17 @@ def test_fake_transport_satisfies_the_transport_protocol():
 
 # --- _build_resolver default + failover ----------------------------------
 
-def test_build_resolver_default_is_loopback_with_failover():
-    """No --registry means: try dns://127.0.0.1:53, fall back to system."""
+def test_build_resolver_default_is_system_resolver():
+    """No --registry means: resolve via the system DNS resolver directly.
+
+    No loopback primary, no FailoverResolver wrapper — so there is no
+    dead `dns://127.0.0.1:53` probe to time out when no `ruuid anchor`
+    is running.
+    """
     from ruuid.resolve import _build_resolver, FailoverResolver, Resolver
     reg = _build_resolver(None)
-    assert isinstance(reg, FailoverResolver)
-    assert isinstance(reg._primary, Resolver)
-    assert reg._primary._transport._r.nameservers == ["127.0.0.1"]
-    assert reg._primary._transport._r.port == 53
-    # The fallback is a system Resolver (no override).
-    assert isinstance(reg._fallback, Resolver)
+    assert isinstance(reg, Resolver)
+    assert not isinstance(reg, FailoverResolver)
 
 
 def test_build_resolver_explicit_url_is_still_wrapped_with_failover():

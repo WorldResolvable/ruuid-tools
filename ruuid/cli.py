@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import datetime as _datetime
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -514,15 +515,15 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("uuid", help="RUUID in canonical text form")
     r.add_argument(
         "--registry", metavar="URL",
-        help="Registry endpoint URL to try first. Defaults to "
-             "dns://127.0.0.1:53 (where 'ruuid anchor' binds), so "
-             "'ruuid anchor ZONE.json & ruuid resolve UUID' just "
-             "works. On any failure (anchor not running, prefix not "
-             "in zone, timeout), resolution falls back to the system "
-             "DNS resolver. Forms: 'dns://HOST[:PORT]' for a "
-             "DNS-protocol endpoint (also used for downstream HTTP "
-             "hostname resolution); 'doh://HOST[:PORT][/PATH]' for "
-             "RFC 8484 DoH (path defaults to /dns-query).",
+        default=os.environ.get("RUUID_REGISTRY"),
+        help="Registry endpoint for the PTR + _uuid.<domain> lookups. "
+             "Default: the system DNS resolver. Pass 'dns://HOST[:PORT]' "
+             "for a DNS-protocol endpoint (e.g. 'dns://127.0.0.1:53' to "
+             "use a local 'ruuid anchor') or 'doh://HOST[:PORT][/PATH]' "
+             "for RFC 8484 DoH (path defaults to /dns-query). An explicit "
+             "endpoint is tried first and falls back to the system "
+             "resolver on failure. Also settable via the RUUID_REGISTRY "
+             "environment variable; the --registry flag takes precedence.",
     )
     r.add_argument(
         "--follow", nargs="?", const="referent", default=None,
@@ -556,8 +557,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pa.add_argument("uuid", help="RUUID in canonical text form")
     pa.add_argument(
         "--registry", metavar="URL",
-        help="Registry endpoint URL to try first; same semantics and "
-             "default as `ruuid resolve --registry` (see that subcommand).",
+        default=os.environ.get("RUUID_REGISTRY"),
+        help="Registry endpoint for the lookups; same semantics and "
+             "default as `ruuid resolve --registry` (system resolver by "
+             "default, or the RUUID_REGISTRY environment variable).",
     )
     pa.set_defaults(func=cmd_parse)
 

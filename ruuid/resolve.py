@@ -985,12 +985,6 @@ def _parse_doc(body: bytes | None) -> dict | None:
 
 # --- Registry construction (internal) -------------------------------------
 
-#: Default registry endpoint when `--registry` is not supplied. Matches
-#: where `ruuid anchor` binds by default, so `ruuid anchor ZONE.json &
-#: ruuid resolve UUID` just works in the common loopback workflow.
-DEFAULT_REGISTRY_URL = "dns://127.0.0.1:53"
-
-
 class FailoverResolver:
     """Try one resolver; fall back to a second if the first fails.
 
@@ -1076,14 +1070,21 @@ def _build_primary_resolver(url: str):
 
 
 def _build_resolver(url: str | None):
-    """Build a `Resolver` with system-DNS failover.
+    """Build the registry resolver for a registry URL.
 
-    When `url` is None, the primary is `DEFAULT_REGISTRY_URL`
-    (loopback DNS, matching the `ruuid anchor` default binding).
-    The fallback is always the system resolver, so resolution
-    succeeds for prefixes the primary doesn't know about (and for
-    the no-anchor-running case).
+    `url is None` — the default — resolves against the system DNS
+    resolver directly: the system resolver *is* the registry, so no
+    failover wrapper is needed (and there is no loopback DNS server to
+    probe, which is what made the old loopback-primary default pay a
+    multi-second timeout on machines with no `ruuid anchor` running).
+
+    An explicit `url` (`dns://HOST[:PORT]` or `doh://...`, e.g. a local
+    `ruuid anchor` on `dns://127.0.0.1:53`) is used as the *primary*,
+    with the system resolver as a fallback, so resolution still
+    succeeds for prefixes the chosen endpoint doesn't know about.
     """
-    primary = _build_primary_resolver(url or DEFAULT_REGISTRY_URL)
+    if url is None:
+        return Resolver()
+    primary = _build_primary_resolver(url)
     fallback = Resolver()
     return FailoverResolver(primary, fallback)

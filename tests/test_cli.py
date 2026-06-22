@@ -144,6 +144,37 @@ def test_resolve_default_prints_just_doc_uri(test_ns, capsys):
     assert out.strip() == "https://example.com/.well-known/uuid-document.json"
 
 
+def test_resolve_registry_from_env(test_ns, capsys, monkeypatch):
+    """RUUID_REGISTRY supplies the registry when --registry is omitted."""
+    from ruuid import RUUID
+
+    ru = RUUID.from_anchor("192.0.2.42", identifier=42, type_id=0)
+    test_ns.add_ptr("42.2.0.192.in-addr.arpa", "example.com")
+    monkeypatch.setenv("RUUID_REGISTRY", f"dns://127.0.0.1:{test_ns.port}")
+    rc = main(["resolve", str(ru)])  # no --registry flag
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.strip() == "https://example.com/.well-known/uuid-document.json"
+
+
+def test_resolve_flag_overrides_env_registry(test_ns, capsys, monkeypatch):
+    """An explicit --registry beats RUUID_REGISTRY (flag precedence)."""
+    from ruuid import RUUID
+
+    ru = RUUID.from_anchor("192.0.2.42", identifier=42, type_id=0)
+    test_ns.add_ptr("42.2.0.192.in-addr.arpa", "example.com")
+    # Env points at a dead port; the flag points at the live fake NS.
+    monkeypatch.setenv("RUUID_REGISTRY", "dns://127.0.0.1:1")
+    rc = main([
+        "resolve",
+        "--registry", f"dns://127.0.0.1:{test_ns.port}",
+        str(ru),
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.strip() == "https://example.com/.well-known/uuid-document.json"
+
+
 def test_resolve_verbose_emits_all_sections(test_ns, capsys):
     """--verbose prints detail block + doc-document section + referent-body section."""
     from ruuid import RUUID
@@ -320,11 +351,11 @@ def test_parse_quiet_trace_drops_failover_and_errors(monkeypatch, test_ns, capsy
 
 
 def test_parse_uses_registry_default(monkeypatch, test_ns, capsys):
-    """`ruuid parse` with no --registry uses the loopback default (with
-    failover). Here we point the failover *fallback* (the system resolver)
-    at the test NS by monkey-patching the default Resolver constructor,
-    so the test exercises that the default code path actually goes
-    through FailoverResolver without needing root or port 53."""
+    """`ruuid parse` with no --registry resolves via the system resolver
+    directly (no loopback primary, no failover wrapper). Here we redirect
+    the default `Resolver()` at the test NS by monkey-patching its
+    constructor, so the test exercises the default code path without
+    needing root or port 53."""
     import dns.resolver
     from ruuid import RUUID
     from ruuid import resolve as resolve_mod
@@ -332,7 +363,7 @@ def test_parse_uses_registry_default(monkeypatch, test_ns, capsys):
     real_resolver_cls = resolve_mod.Resolver
     test_ns.add_ptr("42.2.0.192.in-addr.arpa", "example.com")
 
-    def fallback_factory(*args, **kwargs):
+    def system_factory(*args, **kwargs):
         # Default Resolver() (no args) → the system; redirect to test NS.
         if not kwargs and not args:
             return real_resolver_cls(
@@ -342,7 +373,7 @@ def test_parse_uses_registry_default(monkeypatch, test_ns, capsys):
             )
         return real_resolver_cls(*args, **kwargs)
 
-    monkeypatch.setattr(resolve_mod, "Resolver", fallback_factory)
+    monkeypatch.setattr(resolve_mod, "Resolver", system_factory)
     ru = RUUID.from_anchor("192.0.2.42", identifier=42, type_id=0)
     rc = main(["parse", str(ru)])
     out = capsys.readouterr().out

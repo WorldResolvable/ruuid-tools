@@ -33,6 +33,14 @@ else
     sleep 0.5
 fi
 
+# The demo's RUUIDs anchor to documentation IPs (192.0.2.x, 198.51.100.x,
+# 203.0.113.x, 2001:db8::) whose PTR + _uuid records live only in the
+# anchor's zone on 127.0.0.1:53, not in public DNS. `ruuid resolve`
+# defaults to the system resolver, so point it at the anchor for the
+# whole demo via the environment (individual commands can still override
+# with --registry; the two doh:// examples below do exactly that).
+export RUUID_REGISTRY=dns://127.0.0.1:53
+
 
 function heading() {
     echo
