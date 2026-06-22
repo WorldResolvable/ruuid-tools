@@ -340,11 +340,33 @@ print(out["domain"], out["referent_uri"])
 **Full API reference: [docs/API.md](docs/API.md)** — every call, its
 arguments, return shapes, and examples.
 
+## DIF Universal Resolver driver
+
+[`uni-resolver-driver/`](uni-resolver-driver/) packages the `did:uuid` resolution pipeline as a
+[DIF Universal Resolver](https://github.com/decentralized-identity/universal-resolver)
+driver — a small HTTP container answering
+`GET /1.0/identifiers/<did:uuid:...>`. It needs no `ruuid anchor` and
+no zone of its own; it resolves against the DNS the container is
+pointed at (system resolver by default, or a `dns://` / `doh://`
+endpoint). See [`uni-resolver-driver/README.md`](uni-resolver-driver/README.md) for build, run,
+and Universal Resolver registration.
+
+```
+docker build -f uni-resolver-driver/Dockerfile -t universalresolver/driver-did-uuid .
+docker run --rm -p 8080:8080 universalresolver/driver-did-uuid
+curl http://localhost:8080/1.0/identifiers/did:uuid:00000000-0001-8200-8002-341632100000
+```
+
+That identifier is anchored to a real published PTR (`52.22.50.16` →
+`riverscape.info`) and resolves live — see
+[`examples/riverscape.info/`](examples/riverscape.info/).
+
 ## Layout
 
 ```
-ruuid/                 the library (core, generate, resolve, anchor, cli)
+ruuid/                 the library (core, generate, resolve, anchor, cli, driver)
 docs/API.md            library API reference
+uni-resolver-driver/   DIF Universal Resolver driver for did:uuid (Dockerfile, README)
 tests/                 pytest test suite (fake DNS server in conftest.py)
 demo/demo.sh           end-to-end bash demo driving the ruuid CLI
 demo/demo-zone.json    zone file for the demo's `ruuid anchor` instance

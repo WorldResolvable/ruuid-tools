@@ -1,0 +1,15 @@
+{
+  "domains": [
+    {
+      "domain": "riverscape.info",
+      "anchors": ["52.22.50.16"],
+      "service": [
+        {
+          "id": "#0",
+          "type": "Referent",
+          "serviceEndpoint": "/things/<identifier>"
+        }
+      ]
+    }
+  ]
+}

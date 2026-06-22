@@ -1,0 +1,8 @@
+{
+  "id": "did:uuid:00000000-0001-8200-8002-341632100000",
+  "anchor": "52.22.50.16",
+  "domain": "riverscape.info",
+  "type": "Referent",
+  "identifier": "000000000001",
+  "description": "Example RUUID referent hosted on riverscape.info, the live test identifier for the did:uuid Universal Resolver driver."
+}

@@ -1,0 +1,22 @@
+# Standalone compose for building and running the did:uuid driver on
+# its own (outside the full Universal Resolver). From this directory:
+#
+#   docker compose up --build
+#   curl http://localhost:8080/1.0/identifiers/did:uuid:00000000-0001-8200-8002-341632100000
+#
+# For the entry to add to the upstream universal-resolver repo, see
+# README.md ("Registering with the Universal Resolver").
+
+services:
+  driver-did-uuid:
+    build:
+      context: ..
+      dockerfile: uni-resolver-driver/Dockerfile
+    image: universalresolver/driver-did-uuid:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # Registry phase (PTR + _uuid.<domain>) resolver. "dns://" is the
+      # container's system resolver; or point at a specific server, e.g.
+      # dns://9.9.9.9:53 or doh://dns.example/dns-query.
+      RUUID_DRIVER_REGISTRY: "dns://"

@@ -1,0 +1,11 @@
+{
+  "@context": "https://www.w3.org/ns/cid/v1",
+  "id": "https://riverscape.info/.well-known/uuid-document.json",
+  "service": [
+    {
+      "id": "#0",
+      "type": "Referent",
+      "serviceEndpoint": "/things/<identifier>"
+    }
+  ]
+}

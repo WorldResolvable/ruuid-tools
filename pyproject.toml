@@ -19,6 +19,7 @@ test = [
 
 [project.scripts]
 ruuid = "ruuid.cli:main"
+ruuid-did-uuid-driver = "ruuid.driver:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ruuid"]
