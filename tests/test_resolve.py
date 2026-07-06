@@ -509,8 +509,9 @@ def test_synthesise_sets_id_to_resolved_did_and_controller_to_anchor_did():
     assert doc["@context"] == "https://www.w3.org/ns/did/v1"
 
 
-def test_synthesise_projects_to_single_class_service_entry():
-    """The synthesised doc carries only the resolved class's service."""
+def test_synthesise_projects_to_single_referent_alias():
+    """The synthesised doc carries one alsoKnownAs: the resolved class's
+    referent URI (no `service` array, no unregistered "Referent" type)."""
     r = RUUID.from_anchor("192.0.2.1", identifier=42, type_id=1)
     document = _document(
         "did:uuid:00000000-0000-8200-8002-c000020100000",
@@ -520,8 +521,8 @@ def test_synthesise_projects_to_single_class_service_entry():
         ],
     )
     doc = synthesise_ruuid_document(r, document, domain="example.com")
-    assert len(doc["service"]) == 1
-    assert doc["service"][0]["type"] == "Thing"
+    assert "service" not in doc
+    assert doc["alsoKnownAs"] == ["https://example.com/thing/00000000002a"]
 
 
 def test_synthesise_substitutes_endpoint_template():
@@ -535,17 +536,7 @@ def test_synthesise_substitutes_endpoint_template():
         )],
     )
     doc = synthesise_ruuid_document(r, document, domain="example.com")
-    assert (
-        doc["service"][0]["serviceEndpoint"]
-        == "https://example.com/thing/000000abcdef"
-    )
-
-
-def test_synthesise_service_id_is_fragment_under_resolved_did():
-    r = RUUID.from_anchor("192.0.2.1", identifier=42, type_id=3)
-    document = _document("did:uuid:00000000-0000-8200-8002-c000020100000")
-    doc = synthesise_ruuid_document(r, document, domain="example.com")
-    assert doc["service"][0]["id"] == f"did:uuid:{r}#3"
+    assert doc["alsoKnownAs"] == ["https://example.com/thing/000000abcdef"]
 
 
 def test_synthesise_uses_did_core_context_regardless_of_document_context():
@@ -590,7 +581,7 @@ def test_synthesise_with_no_document_uses_default_template():
     )
     assert doc["id"] == f"did:uuid:{r}"
     assert doc["controller"] == anchor_did
-    assert doc["service"][0]["serviceEndpoint"] == "https://example.com/7/00000000002a"
+    assert doc["alsoKnownAs"] == ["https://example.com/7/00000000002a"]
 
 
 def test_synthesise_falls_back_to_type_zero_template():
@@ -604,10 +595,7 @@ def test_synthesise_falls_back_to_type_zero_template():
         )],
     )
     doc = synthesise_ruuid_document(r, document, domain="example.com")
-    assert (
-        doc["service"][0]["serviceEndpoint"]
-        == "https://example.com/any/00000000002a"
-    )
+    assert doc["alsoKnownAs"] == ["https://example.com/any/00000000002a"]
 
 
 # --- end-to-end DNS resolution against the test NS -----------------------

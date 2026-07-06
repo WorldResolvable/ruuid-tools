@@ -280,15 +280,21 @@ def synthesise_ruuid_document(
     - `controller` = `did:uuid:<controller-RUUID>` (the resolved
       RUUID with class and identifier zeroed, derived deterministically
       from the RUUID's bits).
-    - One `service` entry wrapping the Phase 2 referent URI:
-      `id` = `<resolved DID>#<class>`, `serviceEndpoint` = the
-      substituted referent URI, `type` propagated from the matching
-      service entry in the UUID document (or "Referent" if no
-      UUID-document entry matched / no UUID document was fetched).
+    - `alsoKnownAs` = `[<referent URI>]`, the substituted Phase 2
+      referent URI. The referent denotes the same subject as the DID,
+      which is exactly the DID-Core meaning of `alsoKnownAs`; unlike a
+      typical unverified alias, this one is DNS/anchor-bound by the
+      RUUID resolution itself. The class label lives in the source
+      UUID document's `service` template store and in the RUUID's own
+      bits, so it is not repeated here.
     - `@context` = the DID-Core context.
 
+    (Earlier revisions wrapped the referent in a `service` entry with
+    an unregistered `type` of "Referent"; `alsoKnownAs` is the
+    idiomatic DID-Core home for a same-subject identifier.)
+
     When `document` is None or empty, the default-template fallback
-    is used for the referent URI and `type` is "Referent".
+    is used for the referent URI.
     """
     resolved_did = f"did:uuid:{ruuid}"
     document = document if isinstance(document, dict) else {}
@@ -296,22 +302,16 @@ def synthesise_ruuid_document(
     controller_ruuid = dataclasses.replace(ruuid, identifier=0, type_id=0)
     controller_did = f"did:uuid:{controller_ruuid}"
 
-    entry, template = _select_service_entry(document, ruuid.type_id)
-    endpoint = substitute_template(
+    _entry, template = _select_service_entry(document, ruuid.type_id)
+    referent_uri = substitute_template(
         template, ruuid, domain=domain, document_uri=document_uri,
     )
-
-    service_entry: dict = {
-        "id": f"{resolved_did}#{ruuid.type_id}",
-        "type": (entry or {}).get("type", "Referent"),
-        "serviceEndpoint": endpoint,
-    }
 
     return {
         "@context": DID_CORE_CONTEXT,
         "id": resolved_did,
         "controller": controller_did,
-        "service": [service_entry],
+        "alsoKnownAs": [referent_uri],
     }
 
 

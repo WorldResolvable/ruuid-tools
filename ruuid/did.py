@@ -27,8 +27,8 @@ Supported methods:
             handler verifies the version/variant, then runs the
             two-phase RUUID resolution pipeline against the RUUID to
             obtain a Phase 2 referent URI, and synthesises a per-RUUID
-            DID document that wraps the URI as a service entry (see
-            `ruuid.resolve.synthesise_ruuid_document`). The returned
+            DID document that carries the URI as an `alsoKnownAs`
+            alias (see `ruuid.resolve.synthesise_ruuid_document`). The returned
             bytes are the synthesised document encoded as JSON.
 
               did:uuid:00000000-0000-8200-8002-c000022a0000

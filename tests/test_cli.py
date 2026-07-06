@@ -451,7 +451,7 @@ def test_resolve_follow_ruuid_document_emits_json(test_ns, capsys):
     assert rc == 0
     doc = json.loads(out)
     assert doc["id"] == f"did:uuid:{ru}"
-    assert doc["service"][0]["serviceEndpoint"] == "https://example.com/0/00000000002a"
+    assert doc["alsoKnownAs"] == ["https://example.com/0/00000000002a"]
 
 
 def test_resolve_follow_referent_uri_prints_uri_without_fetching(test_ns, capsys):

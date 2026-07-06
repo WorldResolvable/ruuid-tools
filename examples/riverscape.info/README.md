@@ -61,26 +61,24 @@ of `https://riverscape.info/`, so that:
 Once deployed, resolving the test DID walks the full pipeline — PTR →
 `_uuid.riverscape.info` (or the well-known fallback) → fetch the UUID
 document → substitute the `/things/<identifier>` template — and yields
-a DID document whose service endpoint dereferences to real content:
+a DID document whose `alsoKnownAs` alias dereferences to real content:
 
 ```json
 {
   "@context": "https://www.w3.org/ns/did/v1",
   "id": "did:uuid:00000000-0001-8200-8002-341632100000",
   "controller": "did:uuid:00000000-0000-8200-8002-341632100000",
-  "service": [
-    {
-      "id": "did:uuid:00000000-0001-8200-8002-341632100000#0",
-      "type": "Referent",
-      "serviceEndpoint": "https://riverscape.info/things/000000000001"
-    }
-  ]
+  "alsoKnownAs": ["https://riverscape.info/things/000000000001"]
 }
 ```
 
+The referent denotes the same subject as the DID, so it lives in
+`alsoKnownAs` (the DID-Core property for a same-subject identifier)
+rather than a `service` entry with an unregistered `type`.
+
 Before the document is hosted, the same DID still resolves (the PTR is
-the only hard requirement) but the service endpoint uses the
-spec-default template `https://riverscape.info/0/000000000001`.
+the only hard requirement) but the alias uses the spec-default template
+`https://riverscape.info/0/000000000001`.
 
 Check it locally:
 
@@ -92,11 +90,11 @@ ruuid resolve --registry dns:// --follow ruuid_document \
 ## Resolving all the way to the referent
 
 DID resolution stops at the DID document — it returns the
-`serviceEndpoint` URL but does not fetch what that URL points at
+`alsoKnownAs` URL but does not fetch what that URL points at
 (dereferencing the resource is a separate, application-layer HTTP GET;
-a resolver is not a proxy to arbitrary service endpoints). So going
+a resolver is not a proxy to arbitrary referents). So going
 "all the way through" to the referent is two hops: resolve the DID,
-then GET the endpoint it hands back.
+then GET the alias it hands back.
 
 Against a DIF Universal Resolver instance (the `did:uuid` driver routes
 the first hop; `$RESOLVER` is e.g. `http://localhost:8080` for a local
@@ -105,7 +103,7 @@ the first hop; `$RESOLVER` is e.g. `http://localhost:8080` for a local
 ```bash
 DID="did:uuid:00000000-0001-8200-8002-341632100000"
 curl -s "$RESOLVER/1.0/identifiers/$DID" \
-  | jq -r '.didDocument.service[0].serviceEndpoint' \
+  | jq -r '.didDocument.alsoKnownAs[0]' \
   | xargs curl -s
 ```
 

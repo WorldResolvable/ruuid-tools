@@ -357,9 +357,10 @@ synthesise_ruuid_document(ruuid: RUUID, document: dict | None, *,
 Wrap the Phase-2 referent URI in a per-RUUID DID document for the
 `did:uuid` method. Returns a dict with `@context` (DID-Core), `id`
 (`did:uuid:<ruuid>`), `controller` (`did:uuid:` of the RUUID with
-identifier and type zeroed), and one `service` entry carrying the referent
-URI. With `document` `None`/empty, the default template is used and the
-service `type` is `"Referent"`.
+identifier and type zeroed), and an `alsoKnownAs` array holding the
+referent URI — the referent denotes the same subject as the DID, which
+is the DID-Core meaning of `alsoKnownAs`. With `document` `None`/empty,
+the default template is used.
 
 ---
 

@@ -82,9 +82,7 @@ def test_resolve_success_synthesises_did_document(test_ns):
     doc = res.did_document
     assert doc["id"] == f"did:uuid:{ru}"
     assert doc["@context"] == "https://www.w3.org/ns/did/v1"
-    assert doc["service"][0]["serviceEndpoint"] == (
-        "https://issuer.invalid/0/00000000002a"
-    )
+    assert doc["alsoKnownAs"] == ["https://issuer.invalid/0/00000000002a"]
 
 
 def test_resolution_result_wraps_outcome():
@@ -104,8 +102,7 @@ _SAMPLE_DID = "did:uuid:00000000-0000-8200-8002-c000022a0000"
 _SAMPLE_DOC = {
     "@context": "https://www.w3.org/ns/did/v1",
     "id": _SAMPLE_DID,
-    "service": [{"id": f"{_SAMPLE_DID}#0", "type": "Referent",
-                 "serviceEndpoint": "https://example.com/0/00000000002a"}],
+    "alsoKnownAs": ["https://example.com/0/00000000002a"],
 }
 
 

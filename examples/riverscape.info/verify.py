@@ -144,17 +144,17 @@ def check_resolution(c: Checks) -> dict | None:
     else:
         c.ok("DID document id", DID)
 
-    endpoint = (doc.get("service") or [{}])[0].get("serviceEndpoint")
+    endpoint = (doc.get("alsoKnownAs") or [None])[0]
     if endpoint == REFERENT_URL:
-        c.ok("serviceEndpoint", f"{endpoint} (hosted document in use)")
+        c.ok("alsoKnownAs", f"{endpoint} (hosted document in use)")
     elif endpoint == DEFAULT_TEMPLATE_ENDPOINT:
         c.fail(
-            "serviceEndpoint",
+            "alsoKnownAs",
             f"got the default-template endpoint {endpoint} — the UUID "
             f"document is not being fetched (not hosted, or unreachable)",
         )
     else:
-        c.fail("serviceEndpoint", f"unexpected: {endpoint}")
+        c.fail("alsoKnownAs", f"unexpected: {endpoint}")
     return doc
 
 
