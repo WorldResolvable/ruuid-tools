@@ -20,6 +20,10 @@ Subcommands:
     ruuid anchor   --zone FILE [--bind HOST] [--dns-port N]
                                [--http-port N] [--https-port N]
                                [--rrtype WHAT]
+    ruuid seal     <address> <domain> [--type N] [--day DATE] [--out DIR]
+                               [--production] [--challenge WHAT]
+                               [--no-domain-cert] [--nameserver HOST[:PORT]]
+                               [--key-bits N] [--acme PATH]
 
 Resolve has five output modes:
   - default: the UUID-document URI on one line (pipeable into curl).
@@ -452,6 +456,35 @@ def cmd_anchor(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_seal(args: argparse.Namespace) -> int:
+    """Establish a CT-anchored genesis proof (experimental)."""
+    from ruuid.seal import render_report, seal
+
+    try:
+        result = seal(
+            args.address,
+            args.domain,
+            type_id=args.type_id,
+            day=args.day,
+            out_dir=args.out,
+            production=args.production,
+            challenge=args.challenge,
+            webroot=args.webroot,
+            domain_cert=args.domain_cert,
+            nameserver=args.nameserver,
+            key_bits=args.key_bits,
+            acme_path=args.acme,
+        )
+    except ValueError as e:
+        print(f"ruuid seal: {e}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"ruuid seal: {e}", file=sys.stderr)
+        return 1
+    print(render_report(result))
+    return 0
+
+
 class _QuietParser(argparse.ArgumentParser):
     """ArgumentParser that suppresses the redundant 'error: ...' line.
 
@@ -650,6 +683,84 @@ def _build_parser() -> argparse.ArgumentParser:
              "a resolver's URI-preferred / TXT-fallback paths in isolation.",
     )
     a.set_defaults(func=cmd_anchor)
+
+    s = sub.add_parser(
+        "seal",
+        help="(experimental) establish a CT-anchored genesis proof for an RUUID",
+        description=(
+            "EXPERIMENTAL. Prove control, as of the day of issuance, of the "
+            "IP address, its reverse zone (PTR -> domain), and the domain, "
+            "by verifying the PTR and obtaining Let's Encrypt certificates "
+            "(an IP-SAN short-lived cert + a same-key dNSName cert) via "
+            "acme.sh. The certs land in Certificate Transparency, so a third "
+            "party can later find them and confirm control on the RUUID's "
+            "anchor day. Mints an RUUID with a day_count inside the IP cert's "
+            "window and writes a committing UUID document. Requires acme.sh "
+            "and openssl. Defaults to the Let's Encrypt STAGING endpoint; "
+            "pass --production for real CT logging."
+        ),
+    )
+    s.add_argument(
+        "address",
+        help="IPv4/IPv6 address (or hostname) whose control is being sealed",
+    )
+    s.add_argument("domain", help="domain the address's PTR must map to")
+    s.add_argument(
+        "--type", dest="type_id", type=_parse_int, default=0,
+        help="10-bit type field for the minted RUUID (default 0)",
+    )
+    s.add_argument(
+        "--day", type=_parse_day, default=None, metavar="DATE",
+        help="anchor day (YYYY-MM-DD or integer day_count since 2025-01-01 "
+             "UTC) for the minted RUUID; MUST fall inside the IP cert's "
+             "validity window and MUST NOT be in the future. Default: today "
+             "UTC (clamped into the window).",
+    )
+    s.add_argument(
+        "--out", default=None, metavar="DIR",
+        help="directory for the key, CSRs, certs, UUID document, and "
+             "seal.json manifest (default: ~/.ruuid/seals/<uuid>/)",
+    )
+    s.add_argument(
+        "--production", action="store_true",
+        help="use the real Let's Encrypt endpoint (real CT logging) instead "
+             "of the default staging endpoint",
+    )
+    s.add_argument(
+        "--challenge", choices=["auto", "http-01", "tls-alpn-01"],
+        default="auto",
+        help="ACME challenge for the IP anchor (DNS-01 is invalid for IPs). "
+             "auto prefers TLS-ALPN-01 (no port-80 takeover) and falls back "
+             "to HTTP-01 (default: auto). Ignored when --webroot is given.",
+    )
+    s.add_argument(
+        "--webroot", default=None, metavar="DIR",
+        help="serve the ACME HTTP-01 challenge from an already-running web "
+             "server's webroot (acme.sh -w DIR) instead of a standalone "
+             "listener — no port takeover, no downtime. Forces HTTP-01. The "
+             "web server must serve DIR/.well-known/acme-challenge/ for BOTH "
+             "the domain and the bare IP (add an Alias / ProxyPass exclusion "
+             "if the site is otherwise proxied).",
+    )
+    s.add_argument(
+        "--no-domain-cert", dest="domain_cert", action="store_false",
+        help="skip the same-key 90-day dNSName cert; certify only the IP "
+             "(domain control then rests on the local PTR check alone)",
+    )
+    s.add_argument(
+        "--nameserver", default=None, metavar="HOST[:PORT]",
+        help="DNS server for the PTR verification (default: system resolver)",
+    )
+    s.add_argument(
+        "--key-bits", type=int, default=2048,
+        help="RSA key size in bits (default: 2048; LE requires >= 2048)",
+    )
+    s.add_argument(
+        "--acme", default=None, metavar="PATH",
+        help="path to the acme.sh script (default: found on PATH or "
+             "~/.acme.sh/acme.sh)",
+    )
+    s.set_defaults(func=cmd_seal)
     return p
 
 

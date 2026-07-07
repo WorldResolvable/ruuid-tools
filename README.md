@@ -2,8 +2,8 @@
 
 Python library and command-line tools for
 [Resolvable UUIDs](https://github.com/WorldResolvable/ruuid-draft). Provides a `ruuid` CLI with
-`generate`, `resolve`, `parse`, `document`, `records`, and `anchor` subcommands, a Python API, and a
-demo.
+`generate`, `resolve`, `parse`, `document`, `records`, `anchor`, and (experimental) `seal`
+subcommands, a Python API, and a demo.
 
 ## Install
 
@@ -146,6 +146,104 @@ Installing the cert into the system trust store (`update-ca-trust`
 on Fedora, `update-ca-certificates` on Debian) would let you drop
 `--cacert`, but `--cacert` is the lightweight path that doesn't
 touch system trust.
+
+### Sealing a genesis proof (experimental)
+
+`seal` establishes a **CT-anchored genesis proof**: durable, third-party-
+checkable evidence that the issuer of an RUUID controlled the anchor —
+*as of the day of issuance* — even after the IP prefix, its reverse zone,
+or the domain later change hands. It addresses the *commandeering*
+problem: DNS authenticates the **current** operator and carries no
+continuity across a transfer, so a later holder of a transferred prefix
+can serve an authentic-looking but unauthorized resolution.
+
+```
+$ ruuid seal 198.51.100.99 data.example.com
+sealed:            002280cb-000f-8200-8002-c63364630000
+did:               did:uuid:002280cb-000f-8200-8002-c63364630000
+environment:       STAGING (untrusted; real CT logging requires --production)
+ip:                198.51.100.99
+domain:            data.example.com
+ptr:               99.100.51.198.in-addr.arpa -> data.example.com  (verified)
+challenge:         tls-alpn-01
+anchor day:        2026-07-07 (day_count=552)
+subject key id:    DD:0B:18:D0:4C:25:...
+ip cert:           2026-07-07..2026-07-14  serial 0D3603EE...
+domain cert:       2026-07-07..2026-10-05  serial 10898BC9...
+artifacts:         ~/.ruuid/seals/002280cb-000f-8200-8002-c63364630000
+```
+
+`seal <address> <domain>` proves, as of the anchor day, that the issuer
+held all three of:
+
+1. **routing control of the IP** — an IP-SAN Let's Encrypt certificate,
+   validated by HTTP-01 or TLS-ALPN-01. (This is *routing* control — you
+   answered the CA's probe at the IP — not reverse-zone control; LE offers
+   no DNS-01 challenge over `in-addr.arpa`. Routing control is the
+   harder-to-spoof signal, so anchoring on it is a feature.)
+2. **the reverse-zone → domain mapping** — verified locally at seal time
+   (the PTR line above) and recorded in the manifest.
+3. **control of the domain** — a same-key `dNSName` certificate.
+
+Both certificates are signed by **one RSA key**, so they share a Subject
+Key Identifier that links them in Certificate Transparency. They are
+logged in CT, so a third party can later find them (e.g. on crt.sh) and
+confirm control on the RUUID's anchor day. The proof is **historical, not
+live**: CT is append-only and backdate-proof, and the RUUID's `day_count`
+is immutable in its own bits, so a party who acquires the prefix *later*
+can get a valid cert but never one dated back to the anchor day. One
+short-lived cert therefore anchors an entire minting batch — there is no
+renewal treadmill.
+
+`seal` mints an RUUID whose `day_count` falls inside the IP cert's
+validity window and writes a UUID document that commits to the key (a
+`publicKeyJwk` verification method) and the proof (a
+`CTAnchoredGenesisProof` service entry with the SKI, the certs' CT
+coordinates, and the PTR result). Everything lands under
+`~/.ruuid/seals/<uuid>/` (override with `--out`): `key.pem`, the two CSRs
+and certs, `uuid-document.json`, and a `seal.json` manifest.
+
+**Prerequisites.** `seal` shells out to [`acme.sh`](https://github.com/acmesh-official/acme.sh)
+(pass `--acme PATH` if it isn't on `$PATH`) and to `openssl`. Real
+issuance requires the machine running `seal` to actually answer Let's
+Encrypt's challenge **at the target IP** (port 443 for TLS-ALPN-01, or 80
+for HTTP-01) — so it must run on the host that holds the address.
+
+**Zero downtime on a live host.** The default `auto` challenge uses a
+standalone listener, which needs to bind 443 or 80 — a conflict if the
+host already runs a web server. Pass `--webroot DIR` to serve the HTTP-01
+challenge from that running server instead (`acme.sh -w DIR`): no port
+takeover, no downtime. The server must serve
+`DIR/.well-known/acme-challenge/` for **both** the domain and the bare IP
+— if the site is reverse-proxied, add a static carve-out, e.g. for Apache:
+
+```apache
+Alias /.well-known/acme-challenge/ /var/www/acme-challenge/
+<Directory /var/www/acme-challenge/>
+    Require all granted
+    ProxyPass !
+</Directory>
+```
+
+**Staging by default.** `seal` uses the Let's Encrypt **staging** endpoint
+unless you pass `--production`. Staging exercises the identical ACME flow
+from an untrusted root and test CT logs, so you can dry-run the pipeline
+anywhere; `--production` issues real, publicly-CT-logged certificates —
+the ones that make the proof meaningful to third parties.
+
+Options: `--type N` (RUUID type field), `--day DATE` (anchor day; must
+fall inside the IP cert window and not be in the future),
+`--challenge {auto,http-01,tls-alpn-01}` (default `auto` prefers
+TLS-ALPN-01, which needs no port-80 takeover), `--webroot DIR` (serve the
+HTTP-01 challenge from a running web server — zero downtime; see above),
+`--no-domain-cert` (certify
+only the IP; domain control then rests on the local PTR check alone),
+`--nameserver HOST[:PORT]` (resolver for the PTR check),
+`--key-bits N`, and `--out DIR`.
+
+> **Experimental.** This command prototypes the genesis-proof profile from
+> the Verifiable Custody Chains design notes ahead of its `-01` write-up;
+> the UUID-document proof shape in particular is expected to evolve.
 
 ### Wire-format probes
 

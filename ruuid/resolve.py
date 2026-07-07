@@ -81,6 +81,24 @@ class ResolveError(Exception):
     """A DNS resolution step failed in a way that should propagate."""
 
 
+def reverse_name_for_ip(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address | str,
+) -> str:
+    """Reverse-DNS name for an IP anchor, at the prefix RUUID resolves under.
+
+    IPv4 addresses are reversed at the full /32 under in-addr.arpa. IPv6
+    addresses are reversed at the /64 prefix (the high 16 nibbles) under
+    ip6.arpa — the same prefix `reverse_dns_name` uses for an RUUID's
+    IPv6 anchor, so a raw /128 address collapses to its /64 reverse name.
+    """
+    if isinstance(ip, str):
+        ip = ipaddress.ip_address(ip)
+    if isinstance(ip, ipaddress.IPv4Address):
+        return ".".join(str(b) for b in reversed(ip.packed)) + ".in-addr.arpa"
+    hex_chars = ip.packed.hex()[:16]
+    return ".".join(reversed(hex_chars)) + ".ip6.arpa"
+
+
 def reverse_dns_name(ruuid: RUUID) -> str:
     """Construct the reverse-DNS name for an RUUID's network anchor.
 
@@ -89,12 +107,12 @@ def reverse_dns_name(ruuid: RUUID) -> str:
     is reversed under ip6.arpa at /64.
     """
     if ruuid.address_family == 4:
-        ipv4_int = (ruuid.network >> 16) & 0xFFFFFFFF
-        octets = ipaddress.IPv4Address(ipv4_int).packed
-        return ".".join(str(b) for b in reversed(octets)) + ".in-addr.arpa"
-    ipv6_int = ruuid.network << 64
-    hex_chars = ipaddress.IPv6Address(ipv6_int).packed.hex()[:16]
-    return ".".join(reversed(hex_chars)) + ".ip6.arpa"
+        ip: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.IPv4Address(
+            (ruuid.network >> 16) & 0xFFFFFFFF
+        )
+    else:
+        ip = ipaddress.IPv6Address(ruuid.network << 64)
+    return reverse_name_for_ip(ip)
 
 
 def identifier_label(ruuid: RUUID) -> str:
