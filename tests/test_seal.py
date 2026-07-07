@@ -366,7 +366,7 @@ def test_run_acme_sh_argv_webroot(tmp_path, monkeypatch):
     assert "--standalone" not in argv and "--alpn" not in argv
     assert "--signcsr" in argv
     assert "letsencrypt_test" in argv                # staging server
-    assert "--profile" in argv and "shortlived" in argv
+    assert "--cert-profile" in argv and "shortlived" in argv
 
 
 def test_run_acme_sh_argv_standalone_modes(tmp_path, monkeypatch):

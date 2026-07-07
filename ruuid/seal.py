@@ -349,7 +349,9 @@ def _run_acme_sh(req: AcmeRequest, *, acme_path: str) -> None:
     else:
         argv.append("--standalone")
     if req.profile:
-        argv += ["--profile", req.profile]
+        # acme.sh spells this --cert-profile (aka --certificate-profile);
+        # LE requires the "shortlived" profile for IP-address certs.
+        argv += ["--cert-profile", req.profile]
     _run(argv)
     if not req.cert_out.exists():
         raise RuntimeError(
