@@ -197,13 +197,19 @@ def _openssl_genrsa(openssl: str, key_path: Path, bits: int) -> None:
 
 
 def _openssl_csr(
-    openssl: str, key_path: Path, csr_path: Path, *, san: str, cn: str
+    openssl: str, key_path: Path, csr_path: Path, *, san: str, cn: str | None = None
 ) -> None:
-    """Write a CSR for `key_path` carrying a single SAN (`IP:...`/`DNS:...`)."""
+    """Write a CSR for `key_path` carrying a single SAN (`IP:...`/`DNS:...`).
+
+    `cn=None` yields an empty subject. This is required for IP-address
+    certs: CAs (Boulder/Let's Encrypt) reject a CSR with an IP literal in
+    the Common Name (`badCSR`), so the IP must live only in the SAN.
+    """
+    subject = f"/CN={cn}" if cn else "/"
     _run([
         openssl, "req", "-new",
         "-key", str(key_path),
-        "-subj", f"/CN={cn}",
+        "-subj", subject,
         "-addext", f"subjectAltName={san}",
         "-out", str(csr_path),
     ])
@@ -580,7 +586,8 @@ def seal(
 
         ip_csr = tmpd / "ip.csr"
         san_ip = f"IP:{ip}"
-        _openssl_csr(openssl, key_path, ip_csr, san=san_ip, cn=ip)
+        # No CN for the IP cert — an IP literal in the CN is rejected as badCSR.
+        _openssl_csr(openssl, key_path, ip_csr, san=san_ip, cn=None)
         ip_cert_path = tmpd / "ip-cert.pem"
         acme_runner(AcmeRequest(
             csr_path=ip_csr, key_path=key_path, cert_out=ip_cert_path,
