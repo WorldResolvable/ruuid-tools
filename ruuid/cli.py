@@ -695,14 +695,17 @@ def _ct_source(args: argparse.Namespace):
     a directory of pre-downloaded bundles offline.
     """
     bundles = getattr(args, "bundles", None)
+    verify_scts = getattr(args, "verify_scts", False)
+    min_scts = getattr(args, "min_scts", 2)
     if getattr(args, "fetch_bundles", False):
         from ruuid.verify import CascadingSource
         return CascadingSource(
-            bundles_dir=bundles, nameserver=getattr(args, "nameserver", None)
+            bundles_dir=bundles, nameserver=getattr(args, "nameserver", None),
+            verify_scts=verify_scts, min_scts=min_scts,
         )
     if bundles:
         from ruuid.verify import LocalBundleSource
-        return LocalBundleSource(bundles)
+        return LocalBundleSource(bundles, verify_scts=verify_scts, min_scts=min_scts)
     return None
 
 
@@ -901,6 +904,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="with --verify, discovery cascade: local --bundles -> the "
              "issuer's published /.well-known/uuid-custody.json -> crt.sh "
              "(fetched bundles are cached)",
+    )
+    r.add_argument(
+        "--verify-scts", action="store_true",
+        help="with --verify + bundles, gate bundle certs on valid embedded "
+             "SCTs at ingest (needs ruuid[sct])",
+    )
+    r.add_argument(
+        "--min-scts", type=int, default=2, metavar="N",
+        help="with --verify-scts, minimum verified SCTs per cert (default: 2)",
     )
     r.set_defaults(func=cmd_resolve)
 
@@ -1169,6 +1181,17 @@ def _build_parser() -> argparse.ArgumentParser:
              "bundles) -> the issuer's published /.well-known/uuid-custody.json "
              "(resolved via the RUUID's IP) -> crt.sh; fetched bundles are "
              "cached, so unknown issuers become locally known",
+    )
+    v.add_argument(
+        "--verify-scts", action="store_true",
+        help="gate bundle certs on valid embedded SCTs at ingest: a bundle "
+             "cert counts only if its CT log signatures verify (needs "
+             "ruuid[sct]). Makes an untrusted bundle trustless; crt.sh is "
+             "unaffected. Fabricated certs are dropped.",
+    )
+    v.add_argument(
+        "--min-scts", type=int, default=2, metavar="N",
+        help="with --verify-scts, minimum verified SCTs per cert (default: 2)",
     )
     v.add_argument(
         "--nameserver", default=None, metavar="HOST[:PORT]",

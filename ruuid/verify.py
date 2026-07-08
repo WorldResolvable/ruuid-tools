@@ -110,9 +110,15 @@ class CtCert:
     not_after: _dt.datetime
     ip_sans: tuple[str, ...]
     dns_sans: tuple[str, ...]
+    # Full-chain PEM (leaf + issuer), carried in published bundles so a resolver
+    # can verify the cert's SCTs itself rather than trusting the publisher.
+    pem: str | None = None
+    # Earliest verified SCT time (ms since epoch), set once SCTs are checked at
+    # ingest; the backdate-proof anchor and the ordering key for earliest-wins.
+    sct_timestamp_ms: int | None = None
 
     def as_dict(self) -> dict:
-        return {
+        d = {
             "crtshId": self.crtsh_id,
             "serial": self.serial,
             "spkiSha256": self.spki_sha256,
@@ -121,6 +127,11 @@ class CtCert:
             "ipSans": list(self.ip_sans),
             "dnsSans": list(self.dns_sans),
         }
+        if self.pem is not None:
+            d["pem"] = self.pem
+        if self.sct_timestamp_ms is not None:
+            d["sctTimestampMs"] = self.sct_timestamp_ms
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "CtCert":
@@ -132,7 +143,15 @@ class CtCert:
             not_after=_dt.datetime.fromisoformat(d["notAfter"]),
             ip_sans=tuple(d.get("ipSans") or []),
             dns_sans=tuple(d.get("dnsSans") or []),
+            pem=d.get("pem"),
+            sct_timestamp_ms=d.get("sctTimestampMs"),
         )
+
+    def ordering_ms(self) -> int:
+        """Earliest-wins key: the verified SCT time if known, else notBefore."""
+        if self.sct_timestamp_ms is not None:
+            return self.sct_timestamp_ms
+        return int(self.not_before.timestamp() * 1000)
 
 
 @runtime_checkable
@@ -271,7 +290,10 @@ class LocalBundleSource:
     (flaky) live CT index.
     """
 
-    def __init__(self, source: "Path | str | list") -> None:
+    def __init__(
+        self, source: "Path | str | list", *,
+        verify_scts: bool = False, min_scts: int = 2,
+    ) -> None:
         self._certs_list: list[CtCert] = []
         paths: list[Path] = []
         if isinstance(source, (str, Path)):
@@ -293,7 +315,10 @@ class LocalBundleSource:
                 by_serial.setdefault(c.serial, c)
         for c in self._certs_list:
             by_serial.setdefault(c.serial, c)
-        self._certs_list = list(by_serial.values())
+        certs = list(by_serial.values())
+        # SCT gate at ingest: an untrusted bundle's certs count only if their
+        # embedded SCTs verify against trusted CT logs.
+        self._certs_list = sct_gate(certs, min_scts=min_scts) if verify_scts else certs
 
     def all_certs(self) -> list[CtCert]:
         return list(self._certs_list)
@@ -303,6 +328,33 @@ class LocalBundleSource:
 
     def certs_for_spki(self, spki_sha256: str) -> list[CtCert]:
         return [c for c in self._certs_list if c.spki_sha256 == spki_sha256]
+
+
+def sct_gate(certs: list[CtCert], *, min_scts: int = 2, log_list=None) -> list[CtCert]:
+    """Keep only certs whose embedded SCTs verify, stamping the SCT timestamp.
+
+    Each kept cert must carry a full-chain PEM and have >= `min_scts` SCTs that
+    verify against trusted CT logs; it is returned stamped with its earliest
+    verified SCT time. Certs without a PEM, or that fail verification, are
+    dropped — so a fabricated cert in an untrusted bundle can't establish a
+    genesis or a chain hop. Requires the `cryptography` extra (raises
+    SctUnavailable otherwise).
+    """
+    import dataclasses
+
+    from ruuid.sct import verify_cert_scts
+
+    kept: list[CtCert] = []
+    for c in certs:
+        if not c.pem:
+            continue
+        try:
+            v = verify_cert_scts(c.pem, log_list=log_list)
+        except ValueError:
+            continue
+        if v.ok(min_scts):
+            kept.append(dataclasses.replace(c, sct_timestamp_ms=v.earliest_verified_ms))
+    return kept
 
 
 def _safe_name(s: str) -> str:
@@ -340,6 +392,8 @@ class CascadingSource:
         persist: bool = True,
         nameserver: str | None = None,
         timeout: float = 15.0,
+        verify_scts: bool = False,
+        min_scts: int = 2,
         resolve_domains=None,
         fetch=None,
     ) -> None:
@@ -347,9 +401,11 @@ class CascadingSource:
             Path(bundles_dir) if bundles_dir is not None
             else Path.home() / ".ruuid" / "bundles"
         )
+        self._verify_scts = verify_scts
+        self._min_scts = min_scts
         self._pool: dict[str, CtCert] = {}
         if self._dir.exists():
-            for c in LocalBundleSource(self._dir).all_certs():
+            for c in self._gate(LocalBundleSource(self._dir).all_certs()):
                 self._pool.setdefault(c.serial, c)
         self._crtsh = (
             crtsh_source if crtsh_source is not None
@@ -366,6 +422,11 @@ class CascadingSource:
         # so we must NOT fall through to crt.sh for it (which would be a slow,
         # pointless lookup of a pinned successor that has no certs of its own).
         self._authoritative = False
+
+    def _gate(self, certs: list[CtCert]) -> list[CtCert]:
+        """SCT-gate bundle-sourced certs when verify_scts is on (crt.sh, the
+        trusted index, is never gated — its results aren't pooled)."""
+        return sct_gate(certs, min_scts=self._min_scts) if self._verify_scts else certs
 
     def _add(self, certs: list[CtCert]) -> None:
         for c in certs:
@@ -411,7 +472,7 @@ class CascadingSource:
                 obj = json.loads(body)
             except (ValueError, TypeError):
                 continue
-            certs = _bundle_certs(obj)
+            certs = self._gate(_bundle_certs(obj))   # SCT-gate untrusted fetch
             if certs:
                 self._add(certs)
                 if self._persist:
@@ -522,7 +583,7 @@ def _earliest_successor(key: str, certs: list[CtCert]) -> str | None:
             continue
         succ = _commitment_successor(c)
         if succ:
-            commits.append((c.not_before, succ))
+            commits.append((c.ordering_ms(), succ))   # verified SCT time if known
     if not commits:
         return None
     commits.sort(key=lambda t: t[0])
@@ -632,13 +693,19 @@ def build_published_custody(seals_dir: Path | str) -> dict:
     own SCTs) — so an issuer serves its own evidence and resolvers verify off
     it, with crt.sh reduced to an independent-audit fallback.
     """
+    import dataclasses
+
     root = Path(seals_dir)
     by_serial: dict[str, CtCert] = {}
     for pem in sorted(root.rglob("*-cert.pem")):
         try:
-            cert = parse_cert_pem(pem.read_bytes())
+            body = pem.read_bytes()
+            cert = parse_cert_pem(body)
         except (OSError, RuntimeError):
             continue
+        # Carry the full-chain PEM so a resolver can verify this cert's SCTs
+        # itself (trustless) rather than believing the distilled facts.
+        cert = dataclasses.replace(cert, pem=body.decode("ascii", "replace"))
         by_serial.setdefault(cert.serial, cert)
     domains, networks = set(), set()
     for meta in list(root.rglob("seal.json")) + list(root.rglob("rotation.json")):
@@ -766,23 +833,16 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
     genesis_by_key: dict[str, Anchoring] = {}
     for cert in (custody.get("chain") or [{}])[0].get("certificates") or []:
         try:
-            nb = _dt.datetime.fromisoformat(cert["notBefore"])
-            na = _dt.datetime.fromisoformat(cert["notAfter"])
+            c = CtCert.from_dict(cert)   # carries pem + sctTimestampMs if present
         except (KeyError, ValueError):
             continue
-        ip_sans = tuple(cert.get("ipSans") or [])
-        spki = cert.get("spkiSha256", "")
-        c = CtCert(
-            crtsh_id=cert.get("crtshId", 0), serial=cert.get("serial", ""),
-            spki_sha256=spki, not_before=nb, not_after=na,
-            ip_sans=ip_sans, dns_sans=tuple(cert.get("dnsSans") or []),
-        )
+        spki = c.spki_sha256
         certs.append(c)
         is_gen = _cert_is_genesis(c, ru, day_count)
         anchoring = Anchoring(
             serial=c.serial, crtsh_id=c.crtsh_id, spki_sha256=spki,
-            not_before=nb.date(), not_after=na.date(),
-            ip_sans=ip_sans, dns_sans=c.dns_sans, is_genesis=is_gen,
+            not_before=c.not_before.date(), not_after=c.not_after.date(),
+            ip_sans=c.ip_sans, dns_sans=c.dns_sans, is_genesis=is_gen,
         )
         timeline.append(anchoring)
         if is_gen and spki not in genesis_by_key:

@@ -695,6 +695,23 @@ chain, so a wrong or hostile domain can never mislead, only fail to help. Also
 accepted by
 .BR "resolve --verify" .
 .TP
+.B \-\-verify-scts ", " \-\-min-scts " \fIN\fR"
+Gate bundle certificates on valid embedded SCTs at ingest: a bundle certificate
+counts toward a genesis or chain hop only if at least
+.I N
+(default 2) of its Signed Certificate Timestamps verify against trusted CT logs
+(see
+.BR "ruuid sct" ).
+A fabricated certificate carries no verifiable SCTs and is dropped, so an untrusted
+bundle becomes trustless; each admitted certificate is stamped with its real SCT
+time, which also orders earliest-commitment-wins. crt.sh (the trusted index) is
+unaffected. Needs the
+.B cryptography
+package
+.RB ( "pip install 'ruuid[sct]'" ).
+Also accepted by
+.BR "resolve --verify" .
+.TP
 .B \-\-emit-custody \fIFILE\fR
 Write the custody bundle used for verification to
 .IR FILE .

@@ -468,9 +468,22 @@ verdict: OK (require >= 2 from trusted logs)
 Trust doesn't vanish — it **moves to the CT log operators**, where CT intends
 it: requiring valid SCTs from two or more independent logs means forgery needs
 multiple operators to collude, not just a lying issuer. A fabricated cert that
-never went through CT simply carries no verifiable SCTs. (This is Phase 1 — the
-verification primitive and `ruuid sct` command; wiring it into `verify` /
-`--fetch-bundles` as a gate on ingested certs is the next phase.)
+never went through CT simply carries no verifiable SCTs.
+
+**Gating verification on SCTs (`--verify-scts`).** Published bundles carry each
+certificate's full-chain PEM, so a resolver can check the SCTs *itself* at
+ingest rather than trusting the publisher. Add `--verify-scts` to `verify` /
+`resolve --verify` (with `--bundles` or `--fetch-bundles`): a bundle cert then
+counts toward a genesis or a chain hop **only if its embedded SCTs verify**
+against trusted logs, and each is stamped with its real SCT timestamp (which
+also drives the earliest-commitment-wins ordering, replacing the `notBefore`
+approximation). A fabricated cert is dropped, so it can't establish anything —
+turning an untrusted bundle trustless. crt.sh, the trusted index, is
+unaffected. Requires `pip install 'ruuid[sct]'`.
+
+```
+$ ruuid verify <uuid> uuid-document.json --bundles ./bundles/ --verify-scts
+```
 
 #### Commandeering-safe resolution: `resolve --verify`
 

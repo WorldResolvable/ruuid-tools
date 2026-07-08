@@ -491,6 +491,57 @@ def test_cascade_wrong_domain_bundle_is_not_misleading(tmp_path):
     assert not result.verified
 
 
+# --- SCT gating of bundle certs (phase 2) --------------------------------
+
+import dataclasses  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+from ruuid.verify import LocalBundleSource, parse_cert_pem  # noqa: E402
+
+_FIXTURE = _Path(__file__).parent / "fixtures" / "le-prod-ip-cert.pem"
+
+
+def test_verify_scts_admits_real_cert_bundle():
+    # A bundle carrying the REAL LE genesis cert (with valid embedded SCTs)
+    # passes the gate and establishes genesis. (The fixture is 002299ac's IP
+    # cert, i.e. RU_STR's genesis, key == SPKI.)
+    ru = RUUID.from_str(RU_STR)
+    pem = _FIXTURE.read_text()
+    cert = dataclasses.replace(parse_cert_pem(pem.encode()), pem=pem)
+    bundle = {"kind": "uuid-custody", "certificates": [cert.as_dict()]}
+    src = LocalBundleSource([bundle], verify_scts=True)
+    result, _ = verify_ruuid(ru, _document(), ct_source=src)
+    assert result.verified and result.genuine_keys == (SPKI,)
+
+
+def test_verify_scts_blocks_fabricated_bundle_cert():
+    # The gap gating closes: a fabricated genesis cert (right IP/day/key but no
+    # real SCTs) is trusted WITHOUT gating, and rejected WITH it.
+    ru = RUUID.from_str(RU_STR)
+    bundle = {"kind": "uuid-custody", "certificates": [GENESIS_CERT.as_dict()]}
+
+    ungated, _ = verify_ruuid(ru, _document(),
+                              ct_source=LocalBundleSource([bundle]))
+    assert ungated.verified                    # trusts the publisher (the risk)
+
+    gated, _ = verify_ruuid(ru, _document(),
+                            ct_source=LocalBundleSource([bundle], verify_scts=True))
+    assert not gated.verified                  # no SCT-verified genesis -> blocked
+
+
+def test_verify_scts_stamps_sct_timestamp():
+    # A gated real cert carries its verified SCT time (used for earliest-wins).
+    pem = _FIXTURE.read_text()
+    cert = dataclasses.replace(parse_cert_pem(pem.encode()), pem=pem)
+    src = LocalBundleSource(
+        [{"kind": "uuid-custody", "certificates": [cert.as_dict()]}],
+        verify_scts=True,
+    )
+    gated = src.all_certs()
+    assert len(gated) == 1
+    assert gated[0].sct_timestamp_ms and gated[0].sct_timestamp_ms > 0
+
+
 # --- per-IP cache / local green-lighting ---------------------------------
 
 class CountingCt(FakeCt):
