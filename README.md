@@ -149,6 +149,11 @@ touch system trust.
 
 ### Sealing a genesis proof (experimental)
 
+> **Running your own issuer host?** See **[docs/DEPLOY.md](docs/DEPLOY.md)**
+> and the `deploy/` scripts for the full recipe — DNS (incl. the reverse-DNS
+> and `*.rotate.<domain>` wildcard), nginx (incl. the catch-all ACME server),
+> `acme.sh`, sealing/rotating, and publishing the custody bundle.
+
 `seal` establishes a **CT-anchored genesis proof**: durable, third-party-
 checkable evidence that the issuer of an RUUID controlled the anchor —
 *as of the day of issuance* — even after the IP prefix, its reverse zone,

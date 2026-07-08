@@ -1,0 +1,78 @@
+# Example nginx configuration for an RUUID issuer host.
+#
+# It serves the three things an issuer needs over HTTP(S):
+#   1. ACME HTTP-01 challenges (for `ruuid seal` / `rotate --webroot`),
+#      including for the wildcard commitment names k<base32>.rotate.<domain>;
+#   2. the published custody bundle  (/.well-known/uuid-custody.json);
+#   3. the UUID document             (/.well-known/uuid-document.json).
+#
+# Replace uuid.zone with your domain. The default webroot is
+# /usr/share/nginx/html; if you change it, change every `root` below too.
+# deploy/setup-host.sh installs this file (substituting your domain).
+
+# --- Catch-all on :80 -------------------------------------------------------
+# Answers ACME HTTP-01 for ANY Host. This is the non-obvious but essential
+# block: `seal --pre-rotate` and `rotate` validate certificates for names like
+# k<base32>.rotate.<domain>, whose Host header does NOT match the <domain>
+# server below, so they land here. Without a catch-all that serves the
+# challenge path, commitment issuance fails.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location /.well-known/acme-challenge/ {
+        root /usr/share/nginx/html;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+    location / { return 404; }
+}
+
+# --- The issuer domain, :80 (challenge + redirect) --------------------------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name uuid.zone;
+
+    location /.well-known/acme-challenge/ {
+        root /usr/share/nginx/html;
+        try_files $uri =404;
+    }
+    location / { return 301 https://$host$request_uri; }
+}
+
+# --- The issuer domain, :443 (documents + bundle + your site) ---------------
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name uuid.zone;
+
+    # The webserver's own TLS certificate. Issue it once with acme.sh and let
+    # it auto-renew — this is SEPARATE from the RUUID genesis/commitment certs:
+    #   ~/.acme.sh/acme.sh --issue -d uuid.zone --webroot /usr/share/nginx/html
+    #   ~/.acme.sh/acme.sh --install-cert -d uuid.zone \
+    #       --key-file /etc/nginx/ssl/uuid.zone.key.pem \
+    #       --fullchain-file /etc/nginx/ssl/uuid.zone.fullchain.pem \
+    #       --reloadcmd "systemctl reload nginx"
+    ssl_certificate     /etc/nginx/ssl/uuid.zone.fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/uuid.zone.key.pem;
+
+    root /usr/share/nginx/html;
+
+    # Published custody bundle — the discovery cascade (`--fetch-bundles`) GETs
+    # this. Keep it current with deploy/publish-custody.sh (cron).
+    location = /.well-known/uuid-custody.json {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin *;
+    }
+
+    # UUID document — resolution fetches this (or your referent template).
+    location = /.well-known/uuid-document.json {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin *;
+    }
+
+    # ... the referent / your site content ...
+    # location / { ... }
+}
