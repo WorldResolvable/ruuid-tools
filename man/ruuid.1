@@ -334,22 +334,31 @@ issuing the IP cert; the domain cert reuses it, so both share one public key and
 link in Certificate Transparency under a single SPKI hash. An RUUID is minted
 whose
 .I day_count
-falls inside the IP cert's validity window, and a UUID document is written that
-commits to the key
-.RI ( publicKeyJwk )
-and the proof (a
-.I CTAnchoredGenesisProof
-service entry with the key's
-.IR spkiSha256 ,
-the certs' CT coordinates, and the PTR result). Artifacts land under
+falls inside the IP cert's validity window, and a minimal
+Controlled-Identifiers document
+.RI ( uuid-document.json )
+is written that commits
+.B only
+that key, via a
+.I verificationMethod
+.RI ( publicKeyJwk ).
+The certificate history is not embedded \(em a document commits the key and
+lets CT be the authority, and its
+.I service
+array is reserved for referent templates, not cert history. The proof is
+discoverable from CT via the key's
+.I spkiSha256
+.RI ( crt.sh?spkisha256= ),
+and the cert coordinates are recorded locally in the
+.I seal.json
+manifest. Artifacts land under
 .I ~/.ruuid/seals/<uuid>/
 (override with
 .BR --out ):
 the key, the certs, the domain CSR,
 .IR uuid-document.json ,
-and a
-.I seal.json
-manifest.
+and
+.IR seal.json .
 .PP
 The proof is historical, not live: the certs are frozen in CT with permanent
 SCTs, so one short-lived cert anchors an unbounded batch of RUUIDs sharing the

@@ -198,16 +198,20 @@ renewal treadmill.
 The genesis key is an EC (P-256) key that `acme.sh` generates while issuing
 the IP cert (we keep it via `--key-file`); the domain cert reuses it, so
 both certs share one public key. `seal` mints an RUUID whose `day_count`
-falls inside the IP cert's validity window and writes a UUID document that
-commits to the key (a `publicKeyJwk` verification method) and the proof (a
-`CTAnchoredGenesisProof` service entry with the key's `spkiSha256`, the
-certs' CT coordinates, and the PTR result). The `spkiSha256` — the SHA-256
-of the public key — is how a third party pulls the family of certs from CT
-(`crt.sh?spkisha256=<hash>`); it is used instead of the X.509 Subject Key
+falls inside the IP cert's validity window and writes a minimal
+Controlled-Identifiers document (`uuid-document.json`) that commits **only
+that key**, via a `verificationMethod` (`publicKeyJwk`). The certificate
+history is *not* embedded in the document — a document should commit the
+key and let CT be the authority for the proof, and its `service` array is
+reserved for referent templates (an issuer concern), not cert history. The
+proof is instead discoverable from CT via the key's **`spkiSha256`** (the
+SHA-256 of the public key): a third party pulls the family of certs with
+`crt.sh?spkisha256=<hash>` — used instead of the X.509 Subject Key
 Identifier because Let's Encrypt's short-lived profile omits that
-extension. Everything lands under `~/.ruuid/seals/<uuid>/` (override with
-`--out`): `key.pem`, the certs, the domain CSR, `uuid-document.json`, and a
-`seal.json` manifest.
+extension. The cert coordinates are recorded locally in the `seal.json`
+manifest. Everything lands under `~/.ruuid/seals/<uuid>/` (override with
+`--out`): `key.pem`, the certs, the domain CSR, `uuid-document.json`, and
+`seal.json`.
 
 **Prerequisites.** `seal` shells out to [`acme.sh`](https://github.com/acmesh-official/acme.sh)
 (pass `--acme PATH` if it isn't on `$PATH`) and to `openssl`. Real

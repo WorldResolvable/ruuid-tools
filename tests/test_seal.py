@@ -152,7 +152,7 @@ def test_seal_two_certs_issued_with_right_profiles(ptr_ns, tmp_path):
     assert dom_req.identifier == DOMAIN
 
 
-def test_seal_document_commits_key_and_proof(ptr_ns, tmp_path):
+def test_seal_document_commits_only_the_key(ptr_ns, tmp_path):
     result = seal(
         IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
         acme_runner=FakeAcme(), challenge="http-01",
@@ -160,6 +160,7 @@ def test_seal_document_commits_key_and_proof(ptr_ns, tmp_path):
     doc = result.document
     assert doc["id"] == f"did:uuid:{result.ruuid}"
 
+    # Commits the genesis key via verificationMethod.
     vm = doc["verificationMethod"][0]
     assert vm["type"] == "JsonWebKey"
     jwk = vm["publicKeyJwk"]
@@ -167,23 +168,14 @@ def test_seal_document_commits_key_and_proof(ptr_ns, tmp_path):
     assert jwk["crv"] == "P-256"
     assert jwk["x"] and jwk["y"]    # public point present
     assert jwk["kid"] == result.spki_sha256
+    assert doc["authentication"] == [f"did:uuid:{result.ruuid}#genesis-key"]
 
-    svc = doc["service"][0]
-    assert svc["type"] == "CTAnchoredGenesisProof"
-    ep = svc["serviceEndpoint"]
-    assert ep["ipAddress"] == IP
-    assert ep["domain"] == DOMAIN
-    assert ep["spkiSha256"] == result.spki_sha256
-    assert ep["dayCount"] == result.day_count
-    assert ep["ptr"]["name"] == reverse_name_for_ip(IP)
-    assert DOMAIN in ep["ptr"]["targets"]
-
-    # The published document must NOT leak local filesystem paths — a
-    # verifier finds the cert in CT by serial/fingerprint/SKI.
-    assert "path" not in ep["ipCertificate"]
-    assert "path" not in ep["domainCertificate"]
-    assert ep["ipCertificate"]["serial"]
-    assert ep["ipCertificate"]["fingerprintSha256"]
+    # A clean CID document: NO cert history and NO `service` entries —
+    # `service` is for referent templates (issuer's concern), and the proof
+    # lives in CT / seal.json, not the document.
+    assert "service" not in doc
+    assert "CTAnchoredGenesisProof" not in json.dumps(doc)
+    assert "ipCertificate" not in json.dumps(doc)
 
     # The written document matches the returned one.
     on_disk = json.loads((tmp_path / "s" / "uuid-document.json").read_text())
@@ -245,8 +237,10 @@ def test_seal_no_domain_cert(ptr_ns, tmp_path):
     assert not (tmp_path / "s" / "domain-cert.pem").exists()
     manifest = json.loads((tmp_path / "s" / "seal.json").read_text())
     assert manifest["domainCertificate"] is None
-    assert result.document["service"][0]["serviceEndpoint"]["domainCertificate"] \
-        is None
+    # Document commits only the key regardless of the domain cert.
+    assert "service" not in result.document
+    assert result.document["verificationMethod"][0]["publicKeyJwk"]["kid"] \
+        == result.spki_sha256
 
 
 # --- PTR failures --------------------------------------------------------

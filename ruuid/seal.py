@@ -31,10 +31,12 @@ Concretely, `seal(address, domain)`:
   3. Issues an optional same-key 90-day `dNSName` cert for the domain
      (control of the domain) by building a CSR with that same key and
      submitting it via `acme.sh --signcsr`. One key gives both certs the
-     same Subject Key Identifier (SKI), linking them in CT.
+     same public key, so a single `spkiSha256` query links them in CT.
   4. Mints an RUUID whose `day_count` falls inside the IP cert's validity
-     window, and emits a UUID document that commits to the SKI and the
-     public key.
+     window, and emits a minimal Controlled-Identifiers document that
+     commits **only** that key (a `verificationMethod`). The certificate
+     history is not embedded: it is discoverable from CT via the key's SPKI
+     hash and recorded locally in `seal.json`.
 
 The proof is *historical, not live*: the certs are frozen in CT with
 permanent SCTs, so a verifier years later only checks whether a logged
@@ -531,43 +533,25 @@ def _pick_anchor_day(
 
 # --- UUID document ------------------------------------------------------
 
-def _build_document(
-    ru: RUUID,
-    *,
-    ip: str,
-    domain: str,
-    anchor_day: _dt.date,
-    day_count: int,
-    spki_sha256: str,
-    jwk: dict,
-    ptr_name: str,
-    ptr_targets: list[str],
-    verified_at: str,
-    ip_cert: CertInfo,
-    domain_cert: CertInfo | None,
-) -> dict:
-    """Build the CID UUID document committing to the genesis key + proof."""
+def _build_document(ru: RUUID, *, jwk: dict) -> dict:
+    """Build the Controlled-Identifiers document committing the genesis key.
+
+    A minimal CID document that commits **only** the genesis key, via a
+    `verificationMethod`. It carries no certificate history and no `service`
+    entries:
+
+      - The proof is not embedded — the certificates are discoverable from
+        Certificate Transparency via the key's SPKI hash (and recorded
+        locally in `seal.json`), so the document commits the key and lets CT
+        be the authority rather than asserting its own proof.
+      - `service` entries in an RUUID document are *referent templates*, an
+        issuer concern produced by `ruuid document` / the zone file; they are
+        not seal's to write. With none present, referent resolution falls
+        back to the spec-default template.
+    """
     did = f"did:uuid:{ru}"
-    proof_endpoint = {
-        "profile": "CTAnchoredGenesisProof",
-        "ipAddress": ip,
-        "domain": domain,
-        "anchorDay": anchor_day.isoformat(),
-        "dayCount": day_count,
-        "spkiSha256": spki_sha256,
-        "ptr": {
-            "name": ptr_name,
-            "targets": ptr_targets,
-            "verifiedAt": verified_at,
-        },
-        "ipCertificate": ip_cert.as_dict(),
-        "domainCertificate": domain_cert.as_dict() if domain_cert else None,
-    }
     return {
-        "@context": [
-            "https://www.w3.org/ns/cid/v1",
-            "https://www.w3.org/ns/did/v1",
-        ],
+        "@context": ["https://www.w3.org/ns/cid/v1"],
         "id": did,
         "verificationMethod": [
             {
@@ -579,13 +563,6 @@ def _build_document(
         ],
         "authentication": [f"{did}#genesis-key"],
         "assertionMethod": [f"{did}#genesis-key"],
-        "service": [
-            {
-                "id": f"{did}#ct-genesis-proof",
-                "type": "CTAnchoredGenesisProof",
-                "serviceEndpoint": proof_endpoint,
-            }
-        ],
     }
 
 
@@ -696,12 +673,7 @@ def seal(
         day_count = ru.identifier >> SEQUENCE_BITS
 
         jwk = _ec_public_jwk(openssl, key_path, kid=key_id)
-        document = _build_document(
-            ru, ip=ip, domain=domain, anchor_day=anchor_day,
-            day_count=day_count, spki_sha256=key_id, jwk=jwk,
-            ptr_name=ptr_name, ptr_targets=ptr_targets, verified_at=verified_at,
-            ip_cert=ip_info, domain_cert=domain_info,
-        )
+        document = _build_document(ru, jwk=jwk)
 
         # 5-6. Persist everything into the final directory.
         if out_dir is None:
