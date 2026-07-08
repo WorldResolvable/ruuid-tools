@@ -83,14 +83,12 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .br
 .B ruuid custody
 .I RUUID
-.RB [ --document
-.IR FILE ]
 .RB [ --out
 .IR FILE ]
 .br
 .B ruuid verify
 .I RUUID
-.I DOCUMENT
+.RI [ DOCUMENT ]
 .RB [ --custody
 .IR FILE ]
 .RB [ --emit-custody
@@ -478,18 +476,15 @@ certificate lands only in staging CT and proves nothing to third parties.
 .B ruuid custody \fIRUUID\fR [options]
 .PP
 .B (Experimental.)
-Query Certificate Transparency for every certificate carrying the RUUID's
-committed key and emit a
+Query Certificate Transparency for the certificates that establish the RUUID's
+genesis \(em those carrying the RUUID's IP-address SAN \(em and the genesis key's
+forward anchoring timeline, and emit a
 .I custody.json
-evidence bundle \(em the key's full anchoring timeline, shaped
+evidence bundle, shaped
 .RI ( chain :[ generation ,\ ...]),
-so key rotation extends it without a schema break. Runnable anywhere with
-crt.sh access. The document supplies the key.
-.TP
-.B \-\-document \fIFILE\fR
-Path to the RUUID's
-.IR uuid-document.json .
-If omitted, the RUUID is resolved and its document fetched.
+so key rotation extends it without a schema break. Needs only the RUUID (the
+genesis key is recovered from CT by IP, not from any document). Runnable anywhere
+with crt.sh access.
 .TP
 .B \-\-out \fIFILE\fR
 Write
@@ -498,18 +493,24 @@ to
 .I FILE
 (default: stdout).
 .SH VERIFY
-.B ruuid verify \fIRUUID\fR \fIDOCUMENT\fR [options]
+.B ruuid verify \fIRUUID\fR [\fIDOCUMENT\fR] [options]
 .PP
 .B (Experimental.)
-Confirm in Certificate Transparency that the key committed by the RUUID's
+Recover from Certificate Transparency the key that controlled the RUUID's
+network anchor on the day the RUUID encodes. crt.sh indexes the
+.I iPAddress
+SAN, so the query is by IP: fetch every certificate carrying the RUUID's IP
+.RI ( crt.sh?q= <IP>),
+keep those whose validity window covers the RUUID's day, and take their public
+key as the genesis key \(em only the party who held the IP on that day could
+hold such a certificate, and CT is backdate-proof. With
 .I DOCUMENT
 .RI ( uuid-document.json )
-controlled the RUUID's network anchor on the day the RUUID encodes: compute the
-key's SPKI hash from the document, query
-.IR crt.sh?spkisha256= ,
-and look for a certificate carrying the RUUID's IP whose validity window covers
-the RUUID's day. Exits non-zero when not verified. Prints the verdict and the
-key's anchoring timeline.
+it additionally confirms the document commits that key; without a document it
+reports the genuine key and anchoring timeline straight from CT. Because the key
+comes from CT and not the document, an impostor document is not just rejected \(em
+.B verify
+names the genuine key. Exits non-zero when not verified.
 .PP
 This is the
 .B single-key
@@ -528,12 +529,6 @@ from CT.
 .B \-\-emit-custody \fIFILE\fR
 Write the custody bundle used for verification to
 .IR FILE .
-.PP
-Known limitation: the key is taken from the document's claim (crt.sh cannot be
-queried by IP, only by the key's SPKI hash), so
-.B verify
-confirms that the document's key controlled the anchor on the day, and records
-which certificates it used so the judgement is auditable.
 .SH FILES
 .TP
 .I /etc/ruuid/anchor-cert.pem

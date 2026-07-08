@@ -544,11 +544,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
     except ValueError as e:
         print(f"ruuid verify: invalid UUID: {e}", file=sys.stderr)
         return 1
-    try:
-        document = json.loads(Path(args.document).read_text())
-    except (OSError, ValueError) as e:
-        print(f"ruuid verify: cannot read document: {e}", file=sys.stderr)
-        return 1
+    document = None
+    if args.document:
+        try:
+            document = json.loads(Path(args.document).read_text())
+        except (OSError, ValueError) as e:
+            print(f"ruuid verify: cannot read document: {e}", file=sys.stderr)
+            return 1
     custody = None
     if args.custody:
         try:
@@ -570,7 +572,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
 def cmd_custody(args: argparse.Namespace) -> int:
     """Build a CT custody bundle (custody.json) for an RUUID (experimental)."""
     from ruuid.core import RUUID
-    from ruuid.resolve import resolve_ruuid
     from ruuid.verify import CrtShSource, gather_custody
 
     try:
@@ -578,28 +579,8 @@ def cmd_custody(args: argparse.Namespace) -> int:
     except ValueError as e:
         print(f"ruuid custody: invalid UUID: {e}", file=sys.stderr)
         return 1
-    if args.document:
-        try:
-            document = json.loads(Path(args.document).read_text())
-        except (OSError, ValueError) as e:
-            print(f"ruuid custody: cannot read document: {e}", file=sys.stderr)
-            return 1
-    else:
-        try:
-            out = resolve_ruuid(args.ruuid, follow="document")
-            body = out.get("document")
-            if not body:
-                raise ValueError("no document at the resolved URI")
-            document = json.loads(body)
-        except (ValueError, ResolveError) as e:
-            print(
-                f"ruuid custody: could not resolve the RUUID's document "
-                f"({e}); pass --document FILE",
-                file=sys.stderr,
-            )
-            return 1
     try:
-        custody = gather_custody(ru, document, CrtShSource())
+        custody = gather_custody(ru, CrtShSource())
     except (ValueError, RuntimeError) as e:
         print(f"ruuid custody: {e}", file=sys.stderr)
         return 1
@@ -922,17 +903,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "verify",
         help="(experimental) verify an RUUID's genesis proof against CT",
         description=(
-            "Verify that the key committed by an RUUID's UUID document "
-            "controlled the RUUID's network anchor on the day the RUUID "
-            "encodes, by checking Certificate Transparency. Stage 1 assumes a "
-            "single key from genesis to now (the key may have been re-anchored "
-            "to other IPs/domains, which appear in the timeline). With a "
-            "custody.json the check is offline and deterministic; without one "
-            "it is built live from CT. Exits non-zero when not verified."
+            "Recover from Certificate Transparency the key that controlled the "
+            "RUUID's network anchor on the day the RUUID encodes (crt.sh indexes "
+            "the IP-address SAN), and — if a document is given — confirm it "
+            "commits that key. With no document, report the genuine key and "
+            "anchoring timeline straight from CT. Stage 1 assumes a single key "
+            "from genesis to now (re-anchoring to other IPs/domains appears in "
+            "the timeline). With a custody.json the check is offline and "
+            "deterministic; without one it is built live from CT. Exits "
+            "non-zero when not verified."
         ),
     )
     v.add_argument("ruuid", help="RUUID in canonical text form")
-    v.add_argument("document", help="path to the RUUID's uuid-document.json")
+    v.add_argument(
+        "document", nargs="?", default=None,
+        help="path to the RUUID's uuid-document.json (optional; without it, "
+             "report the genuine key from CT)",
+    )
     v.add_argument(
         "--custody", default=None, metavar="FILE",
         help="pre-built custody.json bundle (else built live from CT)",
@@ -947,18 +934,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "custody",
         help="(experimental) build a CT custody bundle (custody.json) for an RUUID",
         description=(
-            "Query Certificate Transparency for every certificate carrying the "
-            "RUUID's committed key and emit a custody.json evidence bundle — the "
-            "key's full anchoring timeline. Runnable anywhere with crt.sh "
-            "access. The document supplies the key: pass --document, or omit it "
-            "to resolve the RUUID and fetch it."
+            "Query Certificate Transparency for the certificates that establish "
+            "the RUUID's genesis — those carrying the RUUID's IP-address SAN — "
+            "and the genesis key's forward anchoring timeline, and emit a "
+            "custody.json evidence bundle. Needs only the RUUID (the genesis key "
+            "is recovered from CT by IP, not from any document). Runnable "
+            "anywhere with crt.sh access."
         ),
     )
     cu.add_argument("ruuid", help="RUUID in canonical text form")
-    cu.add_argument(
-        "--document", default=None, metavar="FILE",
-        help="path to the RUUID's uuid-document.json (else resolve the RUUID)",
-    )
     cu.add_argument(
         "--out", default=None, metavar="FILE",
         help="write custody.json to FILE (default: stdout)",

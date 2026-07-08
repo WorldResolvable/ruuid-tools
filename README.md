@@ -283,47 +283,52 @@ real CT-logged certificate); pass `--seals DIR` to point elsewhere.
 
 ### Verifying a genesis proof (experimental)
 
-`verify` is the third-party side of `seal`: given an RUUID and its UUID
-document, it confirms *in Certificate Transparency* that the key the
-document commits controlled the RUUID's network anchor on the day the RUUID
-encodes.
+`verify` is the third-party side of `seal`. The trust root is Certificate
+Transparency, keyed by the **IP** — `crt.sh` indexes the `iPAddress` SAN, so
+from the RUUID alone (which encodes the IP and the day) it recovers the key
+that controlled the anchor on that day, independent of any document:
 
 ```
-$ ruuid verify 002299ac-52e1-8200-8002-64390cfe0000 uuid-document.json
+$ ruuid verify 002299ac-52e1-8200-8002-64390cfe0000        # no document
 ruuid:        002299ac-52e1-8200-8002-64390cfe0000
 anchor:       100.57.12.254  on 2026-07-08 (day_count 553)
-committed key: 96D1B942…293CF7E7
-verdict:      VERIFIED — key controlled 100.57.12.254 on 2026-07-08 (CT cert serial 05F98891…)
-key anchoring timeline (from CT, one key):
+genesis key(s) in CT: 96D1B942…293CF7E7
+verdict:      VERIFIED — 100.57.12.254 on 2026-07-08 is controlled by key 96D1B942…293CF7E7 (CT cert serial 05F98891…)
+anchoring timeline (from CT):
   2026-07-07..2026-07-14  100.57.12.254  (crt.sh#27768999966)  <= genesis
   2026-07-07..2026-10-05  uuid.zone      (crt.sh#27769001291)
 ```
 
-It computes the committed key's SPKI hash from the document, queries
-`crt.sh?spkisha256=`, fetches the certificates, and looks for one carrying
-the RUUID's IP whose validity window covers the RUUID's day. It exits
-non-zero when not verified. This is the **single-key** verifier: it assumes
-one key from genesis to now — the key may have been re-anchored to other
-IPs/domains (they show in the timeline), but key *rotation* (a custody chain
-of endorsed generations) is a later layer.
+It queries `crt.sh?q=<IP>` for every certificate ever carrying the RUUID's
+IP, keeps those whose validity window covers the RUUID's day, and takes
+their public key as the **genesis key** — only the party who held the IP on
+that day could hold such a certificate, and CT is backdate-proof. Give it a
+document too and it additionally confirms the document commits that key:
+
+```
+$ ruuid verify 002299ac-… uuid-document.json
+verdict:  VERIFIED — document commits the genesis key controlling 100.57.12.254 on 2026-07-08 (…)
+```
+
+Because the key comes from CT and not from the document, an impostor
+document (e.g. served by a party who later acquired the released IP) is not
+just rejected — `verify` **names the genuine key**, turning a denial into a
+recovery. It exits non-zero when not verified. This is the **single-key**
+verifier: one key from genesis to now, which may have been re-anchored to
+other IPs/domains (they show in the timeline); key *rotation* (a custody
+chain of endorsed generations) is a later layer.
 
 The CT lookups are slow and crt.sh is flaky, so the evidence is a separable,
-cacheable bundle. **`custody`** emits it as `custody.json` (the key's full
-anchoring timeline, shaped `chain: [generation, …]`); **`verify`** then runs
+cacheable bundle. **`custody <ruuid>`** emits it as `custody.json` (the
+genesis certificates plus the key's forward timeline, shaped
+`chain: [generation, …]`) needing only the RUUID; **`verify`** then runs
 **offline and deterministically** against that bundle, or builds one live
 from CT if none is given:
 
 ```
-$ ruuid custody 002299ac-… > custody.json          # do the CT lookups once
+$ ruuid custody 002299ac-… > custody.json                             # do the CT lookups once
 $ ruuid verify 002299ac-… uuid-document.json --custody custody.json   # offline replay
 ```
-
-`custody <ruuid>` resolves the RUUID for its document; pass `--document
-FILE` to skip resolution. Known limitation: the key is taken from the
-document's claim (crt.sh cannot be queried by IP, only by the key's SPKI),
-so `verify` confirms "the document's key controlled the anchor on day D,"
-and records exactly which certificates it used so the judgement is
-auditable.
 
 ### Wire-format probes
 

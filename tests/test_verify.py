@@ -1,11 +1,12 @@
 """Tests for `ruuid verify` / `ruuid custody` (CT genesis verification).
 
-Offline: the CT source is a fake returning canned certificates, so the
-verification logic runs without touching crt.sh.
+Offline: the CT source is a fake keyed by IP and SPKI, so the genesis
+lookup and verification logic run without touching crt.sh.
 """
 
 from __future__ import annotations
 
+import base64
 import datetime as _dt
 import json
 
@@ -35,6 +36,15 @@ JWK = {
 SPKI = "96D1B94232374BF4F6F85FE1D0846925347D75B1D52D19FA91AF7525293CF7E7"
 
 
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+IMPOSTOR_JWK = {"kty": "EC", "crv": "P-256",
+                "x": _b64u(b"\x11" * 32), "y": _b64u(b"\x22" * 32)}
+IMPOSTOR_SPKI = spki_sha256_from_jwk(IMPOSTOR_JWK)
+
+
 def _document(jwk=JWK, ruuid=RU_STR):
     did = f"did:uuid:{ruuid}"
     return {
@@ -44,14 +54,12 @@ def _document(jwk=JWK, ruuid=RU_STR):
             {"id": f"{did}#genesis-key", "type": "JsonWebKey",
              "controller": did, "publicKeyJwk": jwk}
         ],
-        "authentication": [f"{did}#genesis-key"],
-        "assertionMethod": [f"{did}#genesis-key"],
     }
 
 
-def _cert(ip_sans=(), dns_sans=(), *, nb, na, serial="s", cid=1):
+def _cert(ip_sans=(), dns_sans=(), *, nb, na, serial="s", cid=1, spki=SPKI):
     return CtCert(
-        crtsh_id=cid, serial=serial,
+        crtsh_id=cid, serial=serial, spki_sha256=spki,
         not_before=_dt.datetime.fromisoformat(nb),
         not_after=_dt.datetime.fromisoformat(na),
         ip_sans=tuple(ip_sans), dns_sans=tuple(dns_sans),
@@ -59,35 +67,22 @@ def _cert(ip_sans=(), dns_sans=(), *, nb, na, serial="s", cid=1):
 
 
 class FakeCt:
+    """Fake CT source keyed by both IP-SAN and SPKI (filters one cert list)."""
+
     def __init__(self, certs):
-        self._certs = certs
-        self.queried = None
+        self._certs = list(certs)
+
+    def certs_for_ip(self, ip):
+        return [c for c in self._certs if ip in c.ip_sans]
 
     def certs_for_spki(self, spki):
-        self.queried = spki
-        return list(self._certs)
+        return [c for c in self._certs if c.spki_sha256 == spki]
 
 
-class FakeCtBySpki:
-    """CT source that returns different certs per key — models several keys
-    (ours + a commandeering party's) coexisting in CT."""
-
-    def __init__(self, mapping):
-        self._m = mapping
-
-    def certs_for_spki(self, spki):
-        return list(self._m.get(spki, []))
-
-
-def _b64u(b: bytes) -> str:
-    import base64
-    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-
-
-# day_count 553 == 2026-07-08; a 7-day IP cert covering it:
+# day_count 553 == 2026-07-08; a 7-day IP cert covering it, under our key:
 GENESIS_CERT = _cert(
     ip_sans=(IP,), nb="2026-07-07T23:15:18+00:00",
-    na="2026-07-14T23:15:17+00:00", serial="genesis", cid=101,
+    na="2026-07-14T23:15:17+00:00", serial="genesis", cid=101, spki=SPKI,
 )
 
 
@@ -100,130 +95,111 @@ def test_spki_from_jwk_matches_openssl_value():
 def test_anchor_ip_and_daycount():
     ru = RUUID.from_str(RU_STR)
     assert anchor_ip(ru) == IP
-    assert ru.identifier >> 28 == 553  # day_count for 2026-07-08
+    assert ru.identifier >> 28 == 553
 
 
-# --- verify --------------------------------------------------------------
+# --- verify with a document ----------------------------------------------
 
-def test_verify_success():
+def test_verify_success_document_commits_genesis_key():
     ru = RUUID.from_str(RU_STR)
     result, custody = verify_ruuid(ru, _document(), ct_source=FakeCt([GENESIS_CERT]))
     assert result.verified
-    assert result.genesis is not None
+    assert result.genuine_keys == (SPKI,)       # recovered from CT by IP
+    assert result.document_key == SPKI
     assert result.genesis.serial == "genesis"
-    assert result.spki_sha256 == SPKI
-    assert custody["chain"][0]["spkiSha256"] == SPKI
 
 
-def test_verify_fails_when_window_misses_the_day():
+def test_verify_rejects_impostor_document_and_names_genuine_key():
+    # Impostor serves a document with their key; genesis (from CT by IP) is ours.
+    ru = RUUID.from_str(RU_STR)
+    result, _ = verify_ruuid(
+        ru, _document(jwk=IMPOSTOR_JWK), ct_source=FakeCt([GENESIS_CERT])
+    )
+    assert not result.verified
+    assert result.document_key == IMPOSTOR_SPKI
+    assert result.genuine_keys == (SPKI,)       # points to the real key
+    assert SPKI in result.reason
+
+
+def test_verify_no_genesis_in_ct():
     ru = RUUID.from_str(RU_STR)
     late = _cert(ip_sans=(IP,), nb="2026-08-01T00:00:00+00:00",
                  na="2026-08-08T00:00:00+00:00", serial="late")
     result, _ = verify_ruuid(ru, _document(), ct_source=FakeCt([late]))
     assert not result.verified
-    assert "covering" in result.reason
-    # the cert still shows in the timeline, just not flagged genesis
-    assert result.timeline and not result.timeline[0].is_genesis
+    assert "no genesis" in result.reason
 
 
-def test_verify_fails_on_wrong_ip():
+# --- verify WITHOUT a document (recover the key from CT) ------------------
+
+def test_verify_no_document_reports_genuine_key():
     ru = RUUID.from_str(RU_STR)
-    other = _cert(ip_sans=("198.51.100.7",), nb="2026-07-07T00:00:00+00:00",
-                  na="2026-07-14T00:00:00+00:00", serial="other")
-    result, _ = verify_ruuid(ru, _document(), ct_source=FakeCt([other]))
-    assert not result.verified
-
-
-def test_verify_fails_when_custody_is_for_a_different_key():
-    ru = RUUID.from_str(RU_STR)
-    custody = gather_custody(ru, _document(), FakeCt([GENESIS_CERT]))
-    custody["chain"][0]["spkiSha256"] = "DEADBEEF" * 8   # tamper
-    result = verify(ru, _document(), custody)
-    assert not result.verified
-    assert "different key" in result.reason
-
-
-def test_verify_through_ip_and_domain_changes_single_key():
-    # Same key, later re-anchored to a new IP and a domain — still verified,
-    # timeline shows all three, only the genesis cert is flagged.
-    ru = RUUID.from_str(RU_STR)
-    later_ip = _cert(ip_sans=("203.0.113.9",), nb="2026-08-01T00:00:00+00:00",
-                     na="2026-08-08T00:00:00+00:00", serial="moved", cid=102)
-    domain = _cert(dns_sans=("uuid.zone",), nb="2026-07-07T00:00:00+00:00",
-                   na="2026-10-05T00:00:00+00:00", serial="dom", cid=103)
-    result, _ = verify_ruuid(
-        ru, _document(), ct_source=FakeCt([GENESIS_CERT, later_ip, domain])
-    )
+    result, _ = verify_ruuid(ru, None, ct_source=FakeCt([GENESIS_CERT]))
     assert result.verified
-    assert len(result.timeline) == 3
-    assert sum(a.is_genesis for a in result.timeline) == 1
-    assert result.genesis.serial == "genesis"
+    assert result.genuine_keys == (SPKI,)
+    assert result.document_key is None
+    assert SPKI in result.reason
 
 
-def test_old_ruuid_still_verifies_after_moving_to_a_new_ip():
-    # We moved off IP_old to IP_new (same key K); IP_old's genesis cert is
-    # permanent in CT. An old RUUID (IP_old, day 553) still verifies, and the
-    # timeline shows the move.
-    ru = RUUID.from_str(RU_STR)              # anchored to IP_old = 100.57.12.254
+# --- the EIP-move / commandeering scenario -------------------------------
+
+def test_old_ruuid_after_move_and_commandeering():
+    # Our genesis IP cert (covers Jul 8). We move to a new IP (same key), and
+    # a commandeering party later acquires IP_old and gets a real IP cert dated
+    # to their tenure under THEIR key. Recovery must still resolve to our key.
+    ru = RUUID.from_str(RU_STR)
     moved = _cert(ip_sans=("203.0.113.9",), nb="2026-09-01T00:00:00+00:00",
-                  na="2026-09-08T00:00:00+00:00", serial="new-eip", cid=201)
-    result, _ = verify_ruuid(
-        ru, _document(), ct_source=FakeCt([GENESIS_CERT, moved])
-    )
+                  na="2026-09-08T00:00:00+00:00", serial="new-eip", cid=102,
+                  spki=SPKI)
+    commandeer = _cert(ip_sans=(IP,), nb="2026-09-01T00:00:00+00:00",
+                       na="2026-09-08T00:00:00+00:00", serial="commandeer",
+                       cid=103, spki=IMPOSTOR_SPKI)
+    ct = FakeCt([GENESIS_CERT, moved, commandeer])
+
+    # No document: from IP + day alone we recover OUR key (the commandeering
+    # cert covers Sept, not Jul 8, so it doesn't qualify).
+    result, _ = verify_ruuid(ru, None, ct_source=ct)
     assert result.verified
-    assert result.genesis.serial == "genesis"     # old IP cert, still authority
-    assert {a.serial for a in result.timeline} == {"genesis", "new-eip"}
+    assert result.genuine_keys == (SPKI,)
+
+    # Impostor's document is rejected; ours verifies.
+    assert not verify_ruuid(ru, _document(jwk=IMPOSTOR_JWK), ct_source=ct)[0].verified
+    ok, _ = verify_ruuid(ru, _document(), ct_source=ct)
+    assert ok.verified
+    # The forward move shows in the timeline (following our key's SPKI).
+    assert {a.serial for a in ok.timeline} >= {"genesis", "new-eip"}
 
 
-def test_verify_rejects_commandeered_old_ip():
-    # After we release IP_old, a new owner acquires it and gets a *real*
-    # IP_old certificate — but dated to THEIR tenure (Sept), never the old
-    # day (Jul 8). They serve a document committing their key K'. It must NOT
-    # verify the old RUUID: CT is backdate-proof, so K' has no cert covering
-    # the RUUID's day. Meanwhile the genuine document (key K) still verifies.
-    ru = RUUID.from_str(RU_STR)              # old RUUID, IP_old, day 553 (Jul 8)
-    impostor_jwk = {"kty": "EC", "crv": "P-256",
-                    "x": _b64u(b"\x11" * 32), "y": _b64u(b"\x22" * 32)}
-    impostor_spki = spki_sha256_from_jwk(impostor_jwk)
-    impostor_cert = _cert(ip_sans=(IP,), nb="2026-09-01T00:00:00+00:00",
-                          na="2026-09-08T00:00:00+00:00", serial="commandeer")
-    ct = FakeCtBySpki({SPKI: [GENESIS_CERT], impostor_spki: [impostor_cert]})
+# --- custody bundle ------------------------------------------------------
 
-    genuine, _ = verify_ruuid(ru, _document(), ct_source=ct)
-    assert genuine.verified                       # our key still wins
-
-    impostor, _ = verify_ruuid(ru, _document(jwk=impostor_jwk), ct_source=ct)
-    assert not impostor.verified                  # their real-but-late cert can't cover Jul 8
+def test_gather_custody_shape_ip_based():
+    ru = RUUID.from_str(RU_STR)
+    domain = _cert(dns_sans=("uuid.zone",), nb="2026-07-07T00:00:00+00:00",
+                   na="2026-10-05T00:00:00+00:00", serial="dom", cid=104,
+                   spki=SPKI)
+    custody = gather_custody(ru, FakeCt([GENESIS_CERT, domain]))
+    assert custody["ruuid"] == RU_STR
+    assert custody["anchorIp"] == IP
+    assert custody["dayCount"] == 553
+    certs = custody["chain"][0]["certificates"]
+    serials = {c["serial"] for c in certs}
+    assert "genesis" in serials and "dom" in serials   # genesis + forward timeline
+    assert all("spkiSha256" in c for c in certs)
 
 
 def test_verify_roundtrips_through_json_custody():
     ru = RUUID.from_str(RU_STR)
-    custody = gather_custody(ru, _document(), FakeCt([GENESIS_CERT]))
-    reloaded = json.loads(json.dumps(custody))       # serialize/deserialize
+    custody = gather_custody(ru, FakeCt([GENESIS_CERT]))
+    reloaded = json.loads(json.dumps(custody))
     result = verify(ru, _document(), reloaded)
     assert result.verified
 
 
 def test_document_without_key_raises():
     ru = RUUID.from_str(RU_STR)
+    custody = gather_custody(ru, FakeCt([GENESIS_CERT]))
     with pytest.raises(ValueError, match="verificationMethod"):
-        verify_ruuid(ru, {"id": "did:uuid:x"}, ct_source=FakeCt([]))
-
-
-# --- custody bundle shape ------------------------------------------------
-
-def test_gather_custody_shape():
-    ru = RUUID.from_str(RU_STR)
-    ct = FakeCt([GENESIS_CERT])
-    custody = gather_custody(ru, _document(), ct)
-    assert ct.queried == SPKI               # queried CT by the doc's key
-    assert custody["ruuid"] == RU_STR
-    assert custody["anchorIp"] == IP
-    assert custody["dayCount"] == 553
-    gen = custody["chain"][0]
-    assert gen["generation"] == 0 and gen["role"] == "genesis"
-    assert gen["spkiSha256"] == SPKI
-    assert gen["certificates"][0]["ipSans"] == [IP]
+        verify(ru, {"id": "did:uuid:x"}, custody)
 
 
 # --- CLI -----------------------------------------------------------------
@@ -232,7 +208,7 @@ def test_cli_verify_with_prebuilt_custody(tmp_path, capsys):
     ru = RUUID.from_str(RU_STR)
     doc_path = tmp_path / "doc.json"
     doc_path.write_text(json.dumps(_document()))
-    custody = gather_custody(ru, _document(), FakeCt([GENESIS_CERT]))
+    custody = gather_custody(ru, FakeCt([GENESIS_CERT]))
     cust_path = tmp_path / "custody.json"
     cust_path.write_text(json.dumps(custody))
 
@@ -240,10 +216,19 @@ def test_cli_verify_with_prebuilt_custody(tmp_path, capsys):
     assert rc == 0
     assert "VERIFIED" in capsys.readouterr().out
 
-    # tamper the window so it no longer covers the day -> non-zero exit
-    custody["chain"][0]["certificates"][0]["notBefore"] = "2026-08-01T00:00:00+00:00"
-    custody["chain"][0]["certificates"][0]["notAfter"] = "2026-08-08T00:00:00+00:00"
-    cust_path.write_text(json.dumps(custody))
+    # impostor document -> non-zero, names the genuine key
+    doc_path.write_text(json.dumps(_document(jwk=IMPOSTOR_JWK)))
     rc = main(["verify", RU_STR, str(doc_path), "--custody", str(cust_path)])
     assert rc == 1
-    assert "NOT VERIFIED" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "NOT VERIFIED" in out and SPKI in out
+
+
+def test_cli_verify_no_document(tmp_path, capsys):
+    ru = RUUID.from_str(RU_STR)
+    custody = gather_custody(ru, FakeCt([GENESIS_CERT]))
+    cust_path = tmp_path / "custody.json"
+    cust_path.write_text(json.dumps(custody))
+    rc = main(["verify", RU_STR, "--custody", str(cust_path)])
+    assert rc == 0
+    assert SPKI in capsys.readouterr().out
