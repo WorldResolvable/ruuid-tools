@@ -57,7 +57,7 @@ from ruuid.generate import (
     STRUCTURED_IDENTIFIER_EPOCH,
     days_since_epoch,
 )
-from ruuid.seal import _run
+from ruuid.seal import _run, spki_from_commitment_label
 
 
 # --- key identity -------------------------------------------------------
@@ -279,19 +279,90 @@ def _cert_is_genesis(cert: CtCert, ru: RUUID, day_count: int) -> bool:
     return start <= day_count <= end
 
 
+# A custody chain is bounded, to stop a runaway / cyclic walk.
+_MAX_GENERATIONS = 64
+
+
+def _commitment_successor(cert: CtCert) -> str | None:
+    """If `cert` is a pre-rotation commitment, the SPKI it pins, else None.
+
+    A commitment certificate carries a dNSName whose leftmost label is a
+    `commitment_label` (`k<base32>`) that decodes to a 32-byte SPKI.
+    """
+    for name in cert.dns_sans:
+        spki = spki_from_commitment_label(name.split(".", 1)[0])
+        if spki:
+            return spki
+    return None
+
+
+def _earliest_successor(key: str, certs: list[CtCert]) -> str | None:
+    """The successor `key` commits to, resolving forks by earliest cert.
+
+    Among the certificates *under* `key`, the earliest commitment (by
+    notBefore ≈ issuance/SCT time) wins — so a later fork published by a
+    thief of `key` cannot override the genuine, pre-exposure commitment.
+    """
+    commits = []
+    for c in certs:
+        if c.spki_sha256 != key:
+            continue
+        succ = _commitment_successor(c)
+        if succ:
+            commits.append((c.not_before, succ))
+    if not commits:
+        return None
+    commits.sort(key=lambda t: t[0])
+    return commits[0][1]
+
+
+def _walk_chain(
+    start: str, target: str | None, certs: list[CtCert]
+) -> list[str] | None:
+    """Follow the commitment chain from `start`.
+
+    With a `target`, return the chain reaching it, or None. With
+    `target=None`, walk to the chain's current tip and return the full chain.
+    """
+    chain = [start]
+    seen = {start}
+    cur = start
+    for _ in range(_MAX_GENERATIONS):
+        if target is not None and cur == target:
+            return chain
+        succ = _earliest_successor(cur, certs)
+        if not succ or succ in seen:
+            break
+        chain.append(succ)
+        seen.add(succ)
+        cur = succ
+    if target is None:
+        return chain
+    return chain if cur == target else None
+
+
 def _fetch_certs(ru: RUUID, ct_source: CtSource) -> list[CtCert]:
-    """Certs carrying the RUUID's IP (the genesis root) plus each genesis key's
-    forward timeline (IP moves, domain certs). Deduped by serial."""
+    """Certs carrying the RUUID's IP (the genesis root), plus the forward
+    custody chain — each key's certs, following its pre-rotation commitment
+    to the next generation. Deduped by serial."""
     ip = anchor_ip(ru)
     day_count = _day_count(ru)
     ip_certs = ct_source.certs_for_ip(ip)
-    genesis_keys = sorted(
-        {c.spki_sha256 for c in ip_certs if _cert_is_genesis(c, ru, day_count)}
-    )
     by_serial = {c.serial: c for c in ip_certs}
-    for spki in genesis_keys:
-        for c in ct_source.certs_for_spki(spki):
+
+    visited: set[str] = set()
+    frontier = [c.spki_sha256 for c in ip_certs if _cert_is_genesis(c, ru, day_count)]
+    while frontier and len(visited) < _MAX_GENERATIONS:
+        key = frontier.pop()
+        if key in visited:
+            continue
+        visited.add(key)
+        key_certs = ct_source.certs_for_spki(key)
+        for c in key_certs:
             by_serial.setdefault(c.serial, c)
+        succ = _earliest_successor(key, key_certs)
+        if succ and succ not in visited:
+            frontier.append(succ)
     return sorted(by_serial.values(), key=lambda c: c.not_before)
 
 
@@ -404,6 +475,7 @@ class VerifyResult:
     document_key: str | None             # SPKI committed by the document, if any
     genesis: Anchoring | None
     timeline: tuple[Anchoring, ...] = field(default_factory=tuple)
+    chain: tuple[str, ...] = field(default_factory=tuple)  # genesis..document key
 
 
 def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
@@ -421,6 +493,7 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
     day_count = _day_count(ru)
     anchor_date = _day_to_date(day_count)
 
+    certs: list[CtCert] = []
     timeline: list[Anchoring] = []
     genesis_keys: list[str] = []
     genesis_by_key: dict[str, Anchoring] = {}
@@ -437,6 +510,7 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
             spki_sha256=spki, not_before=nb, not_after=na,
             ip_sans=ip_sans, dns_sans=tuple(cert.get("dnsSans") or []),
         )
+        certs.append(c)
         is_gen = _cert_is_genesis(c, ru, day_count)
         anchoring = Anchoring(
             serial=c.serial, crtsh_id=c.crtsh_id, spki_sha256=spki,
@@ -452,12 +526,12 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
     if document is not None:
         doc_key = spki_sha256_from_jwk(document_key(document))
 
-    def make(verified, reason, genesis):
+    def make(verified, reason, genesis, chain=()):
         return VerifyResult(
             ruuid=str(ru), verified=verified, reason=reason, anchor_ip=ip,
             anchor_date=anchor_date, day_count=day_count,
             genuine_keys=tuple(genesis_keys), document_key=doc_key,
-            genesis=genesis, timeline=tuple(timeline),
+            genesis=genesis, timeline=tuple(timeline), chain=tuple(chain),
         )
 
     if not genesis_keys:
@@ -469,32 +543,51 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
         )
 
     if document is not None:
+        # Base case: the document commits a genesis key directly.
         if doc_key in genesis_by_key:
             g = genesis_by_key[doc_key]
             return make(
                 True,
                 f"document commits the genesis key controlling {ip} on "
                 f"{anchor_date.isoformat()} (CT cert serial {g.serial})",
-                g,
+                g, chain=(doc_key,),
             )
+        # Rotated: the document commits a descendant — walk the custody chain
+        # from a genesis key to it (earliest-commitment-wins at each hop).
+        for gk in genesis_keys:
+            ch = _walk_chain(gk, doc_key, certs)
+            if ch is not None:
+                return make(
+                    True,
+                    f"document commits {doc_key} — generation {len(ch) - 1} in "
+                    f"the custody chain from genesis {gk} "
+                    f"({' -> '.join(ch)})",
+                    genesis_by_key[gk], chain=tuple(ch),
+                )
         return make(
             False,
-            f"document commits {doc_key}, but the genesis key for {ip} on "
-            f"{anchor_date.isoformat()} is {', '.join(genesis_keys)} "
-            f"(CT cert serial {genesis_by_key[genesis_keys[0]].serial}) — "
-            f"wrong or impostor document",
+            f"document commits {doc_key}, which is neither the genesis key for "
+            f"{ip} on {anchor_date.isoformat()} ({', '.join(genesis_keys)}) nor "
+            f"a pre-committed successor of it in CT — wrong / impostor / "
+            f"unendorsed key",
             None,
         )
 
-    # No document: report the genuine key from CT.
+    # No document: report the genuine key from CT (and, if it has rotated, the
+    # current tip of the custody chain).
     if len(genesis_keys) == 1:
-        g = genesis_by_key[genesis_keys[0]]
-        return make(
-            True,
-            f"{ip} on {anchor_date.isoformat()} is controlled by key "
-            f"{genesis_keys[0]} (CT cert serial {g.serial})",
-            g,
-        )
+        gk = genesis_keys[0]
+        g = genesis_by_key[gk]
+        ch = _walk_chain(gk, None, certs) or [gk]  # follow to the tip
+        tip = ch[-1]
+        if tip == gk:
+            reason = (f"{ip} on {anchor_date.isoformat()} is controlled by key "
+                      f"{gk} (CT cert serial {g.serial})")
+        else:
+            reason = (f"{ip} on {anchor_date.isoformat()} was genesis-controlled "
+                      f"by {gk}; the custody chain's current key is {tip} "
+                      f"({' -> '.join(ch)})")
+        return make(True, reason, g, chain=tuple(ch))
     return make(
         False,
         f"ambiguous: multiple keys held {ip} on {anchor_date.isoformat()} "
@@ -593,6 +686,12 @@ def render(result: VerifyResult) -> str:
         lines.append(f"genesis key(s) in CT: {', '.join(result.genuine_keys)}")
     if result.document_key is not None:
         lines.append(f"document commits key: {result.document_key}")
+    if len(result.chain) > 1:
+        lines.append(
+            f"custody chain ({len(result.chain) - 1} rotation"
+            f"{'s' if len(result.chain) > 2 else ''}): "
+            + " -> ".join(result.chain)
+        )
     lines.append(f"verdict:      {verdict} — {result.reason}")
     if result.timeline:
         lines.append("anchoring timeline (from CT):")

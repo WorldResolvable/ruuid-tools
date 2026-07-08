@@ -625,11 +625,20 @@ comes from CT and not the document, an impostor document is not just rejected \(
 .B verify
 names the genuine key. Exits non-zero when not verified.
 .PP
-This is the
-.B single-key
-verifier: it assumes one key from genesis to now \(em the key may have been
-re-anchored to other IPs/domains (they appear in the timeline), but key rotation
-(a custody chain of endorsed generations) is a later layer.
+If the document commits a key that is not the genesis key,
+.B verify
+walks the
+.B custody chain
+in CT \(em from the genesis key, following each generation's pre-rotation
+commitment (see
+.B seal --pre-rotate
+and
+.BR rotate )
+to the next \(em and verifies iff the chain reaches the document's key. At each
+hop the earliest commitment wins, so a thief of some generation's key cannot fork
+the succession (the genuine, pre-exposure commitment is always earlier); a verified
+rotated document reports the chain. Re-anchoring the same key to other IPs/domains
+appears in the timeline and needs no chain.
 .TP
 .B \-\-custody \fIFILE\fR
 Verify against a pre-built

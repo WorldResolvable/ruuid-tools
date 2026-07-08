@@ -206,6 +206,95 @@ def test_document_without_key_raises():
         verify(ru, {"id": "did:uuid:x"}, custody)
 
 
+# --- key rotation: the custody chain-walk --------------------------------
+
+from ruuid.seal import commitment_label   # noqa: E402
+
+K2_JWK = {"kty": "EC", "crv": "P-256",
+          "x": _b64u(b"\x33" * 32), "y": _b64u(b"\x44" * 32)}
+K2_SPKI = spki_sha256_from_jwk(K2_JWK)
+K3_JWK = {"kty": "EC", "crv": "P-256",
+          "x": _b64u(b"\x55" * 32), "y": _b64u(b"\x66" * 32)}
+K3_SPKI = spki_sha256_from_jwk(K3_JWK)
+
+
+def _commit_cert(under, nxt, *, nb, na, serial, cid):
+    """A commitment cert under `under` pinning `nxt` (both hex SPKIs)."""
+    label = commitment_label(bytes.fromhex(nxt))
+    return _cert(dns_sans=(f"{label}.rotate.uuid.zone",),
+                 nb=nb, na=na, serial=serial, cid=cid, spki=under)
+
+
+def test_verify_walks_chain_to_rotated_key():
+    ru = RUUID.from_str(RU_STR)
+    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
+                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK),
+                             ct_source=FakeCt([GENESIS_CERT, c1]))
+    assert result.verified
+    assert result.chain == (SPKI, K2_SPKI)       # genesis -> rotated key
+    assert result.document_key == K2_SPKI
+
+
+def test_verify_walks_two_hop_chain():
+    ru = RUUID.from_str(RU_STR)
+    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
+                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
+    c2 = _commit_cert(K2_SPKI, K3_SPKI, nb="2026-07-09T00:00:00+00:00",
+                      na="2026-10-07T00:00:00+00:00", serial="c2", cid=202)
+    result, _ = verify_ruuid(ru, _document(jwk=K3_JWK),
+                             ct_source=FakeCt([GENESIS_CERT, c1, c2]))
+    assert result.verified
+    assert result.chain == (SPKI, K2_SPKI, K3_SPKI)
+
+
+def test_verify_rejects_unendorsed_key():
+    ru = RUUID.from_str(RU_STR)
+    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
+                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
+    # Document commits an impostor key that no one in the chain committed to.
+    result, _ = verify_ruuid(ru, _document(jwk=IMPOSTOR_JWK),
+                             ct_source=FakeCt([GENESIS_CERT, c1]))
+    assert not result.verified
+    assert "successor" in result.reason
+
+
+def test_verify_chain_fork_earliest_commitment_wins():
+    # Two commitments under the genesis key: the genuine one (early) pins K2;
+    # a later fork (a thief) pins the impostor. Earliest-SCT-wins picks K2.
+    ru = RUUID.from_str(RU_STR)
+    genuine = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
+                           na="2026-10-06T00:00:00+00:00", serial="ok", cid=201)
+    fork = _commit_cert(SPKI, IMPOSTOR_SPKI, nb="2026-07-20T00:00:00+00:00",
+                        na="2026-10-18T00:00:00+00:00", serial="fork", cid=202)
+    ct = FakeCt([GENESIS_CERT, genuine, fork])
+    ok, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=ct)
+    assert ok.verified and ok.chain == (SPKI, K2_SPKI)
+    bad, _ = verify_ruuid(ru, _document(jwk=IMPOSTOR_JWK), ct_source=ct)
+    assert not bad.verified                       # the fork target loses
+
+
+def test_custody_bundle_follows_chain_forward():
+    ru = RUUID.from_str(RU_STR)
+    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
+                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
+    c2 = _commit_cert(K2_SPKI, K3_SPKI, nb="2026-07-09T00:00:00+00:00",
+                      na="2026-10-07T00:00:00+00:00", serial="c2", cid=202)
+    bundle = gather_custody(ru, FakeCt([GENESIS_CERT, c1, c2]))
+    serials = {c["serial"] for c in bundle["chain"][0]["certificates"]}
+    assert {"genesis", "c1", "c2"} <= serials     # whole chain gathered from CT
+
+
+def test_verify_no_document_reports_chain_tip():
+    ru = RUUID.from_str(RU_STR)
+    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
+                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
+    result, _ = verify_ruuid(ru, None, ct_source=FakeCt([GENESIS_CERT, c1]))
+    assert result.verified
+    assert result.chain == (SPKI, K2_SPKI)        # walked to the current tip
+    assert K2_SPKI in result.reason
+
+
 # --- per-IP cache / local green-lighting ---------------------------------
 
 class CountingCt(FakeCt):

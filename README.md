@@ -358,10 +358,24 @@ verdict:  VERIFIED — document commits the genesis key controlling 100.57.12.25
 Because the key comes from CT and not from the document, an impostor
 document (e.g. served by a party who later acquired the released IP) is not
 just rejected — `verify` **names the genuine key**, turning a denial into a
-recovery. It exits non-zero when not verified. This is the **single-key**
-verifier: one key from genesis to now, which may have been re-anchored to
-other IPs/domains (they show in the timeline); key *rotation* (a custody
-chain of endorsed generations) is a later layer.
+recovery. It exits non-zero when not verified.
+
+**Key rotation is handled too.** If the document commits a key that isn't the
+genesis key, `verify` walks the **custody chain** in CT — from the genesis
+key, following each generation's pre-rotation commitment (see
+`seal --pre-rotate` and `rotate`) to the next — and verifies iff it reaches
+the document's key. At each hop the *earliest* commitment wins, so a thief of
+some generation's key can't fork the succession (the genuine,
+pre-exposure commitment is always earlier). A verified rotated document
+reports the chain:
+
+```
+custody chain (1 rotation): 96D1B942…  ->  DBF082FE…
+verdict:      VERIFIED — document commits DBF082FE… — generation 1 in the custody chain from genesis 96D1B942… (…)
+```
+
+A single, un-rotated key is just the length-1 case; re-anchoring the *same*
+key to other IPs/domains shows in the timeline and needs no chain.
 
 The CT lookups are slow and crt.sh is flaky, so the evidence is a separable,
 cacheable bundle. **`custody <ruuid>`** emits it as `custody.json` (the
