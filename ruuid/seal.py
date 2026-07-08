@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import base64
 import datetime as _dt
+import hashlib
 import ipaddress
 import json
 import re
@@ -95,7 +96,7 @@ class CertInfo:
     kind: str                 # "ip" or "domain"
     identifier: str           # the IP or domain SAN value
     path: Path
-    subject_key_identifier: str
+    spki_sha256: str          # SHA-256 of the cert's SubjectPublicKeyInfo
     not_before: _dt.datetime
     not_after: _dt.datetime
     serial: str
@@ -108,12 +109,12 @@ class CertInfo:
         `include_path` adds the local filesystem path — appropriate for the
         operator-local `seal.json` manifest, but NOT for the published UUID
         document (a verifier discovers the cert in CT by serial / fingerprint
-        / SKI, and a local path would only leak filesystem structure).
+        / SPKI hash, and a local path would only leak filesystem structure).
         """
         d = {
             "kind": self.kind,
             "identifier": self.identifier,
-            "subjectKeyIdentifier": self.subject_key_identifier,
+            "spkiSha256": self.spki_sha256,
             "notBefore": self.not_before.isoformat(),
             "notAfter": self.not_after.isoformat(),
             "serial": self.serial,
@@ -174,7 +175,7 @@ class SealResult:
     webroot: str | None
     anchor_day: _dt.date
     day_count: int
-    subject_key_identifier: str
+    spki_sha256: str
     ptr_name: str
     ptr_targets: list[str]
     ip_cert: CertInfo
@@ -319,16 +320,15 @@ def _cert_info(openssl: str, cert_path: Path, *, kind: str, identifier: str) -> 
         "",
     )
 
-    ski_out = _run([
-        openssl, "x509", "-in", str(cert_path), "-noout",
-        "-ext", "subjectKeyIdentifier",
-    ]).decode()
-    ski = ""
-    for line in ski_out.splitlines():
-        line = line.strip()
-        if re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2})+", line):
-            ski = line.upper()
-            break
+    # SHA-256 of the SubjectPublicKeyInfo — the key fingerprint CT
+    # aggregators index (crt.sh `?spkisha256=`). Computed from the cert's
+    # own public key, so it does not depend on the cert carrying a Subject
+    # Key Identifier extension (Let's Encrypt's short-lived profile omits it).
+    pub_pem = _run([openssl, "x509", "-in", str(cert_path), "-noout", "-pubkey"])
+    spki_der = _run(
+        [openssl, "pkey", "-pubin", "-outform", "DER"], input_bytes=pub_pem
+    )
+    spki_sha256 = hashlib.sha256(spki_der).hexdigest().upper()
 
     text = _run([openssl, "x509", "-in", str(cert_path), "-noout", "-text"]).decode()
 
@@ -336,7 +336,7 @@ def _cert_info(openssl: str, cert_path: Path, *, kind: str, identifier: str) -> 
         kind=kind,
         identifier=identifier,
         path=cert_path,
-        subject_key_identifier=ski,
+        spki_sha256=spki_sha256,
         not_before=_parse_openssl_time(values.get("notBefore", "")),
         not_after=_parse_openssl_time(values.get("notAfter", "")),
         serial=values.get("serial", ""),
@@ -527,7 +527,7 @@ def _build_document(
     domain: str,
     anchor_day: _dt.date,
     day_count: int,
-    ski: str,
+    spki_sha256: str,
     jwk: dict,
     ptr_name: str,
     ptr_targets: list[str],
@@ -543,7 +543,7 @@ def _build_document(
         "domain": domain,
         "anchorDay": anchor_day.isoformat(),
         "dayCount": day_count,
-        "subjectKeyIdentifier": ski,
+        "spkiSha256": spki_sha256,
         "ptr": {
             "name": ptr_name,
             "targets": ptr_targets,
@@ -662,6 +662,16 @@ def seal(
             domain_info = _cert_info(
                 openssl, domain_cert_path, kind="domain", identifier=domain
             )
+            # Both certs must carry the one genesis key (that is what links
+            # them in CT under a single SPKI hash).
+            if domain_info.spki_sha256 != ip_info.spki_sha256:
+                raise RuntimeError(
+                    "IP and domain certificates do not share the genesis key "
+                    f"({ip_info.spki_sha256} vs {domain_info.spki_sha256})"
+                )
+
+        # The committed key identifier: SHA-256 of the shared public key.
+        key_id = ip_info.spki_sha256
 
         # 4. Anchor day inside the IP cert window; mint the RUUID.
         anchor_day = _pick_anchor_day(
@@ -674,12 +684,10 @@ def seal(
         ru = new_ruuid(ip, type_id=type_id, day=anchor_dt)
         day_count = ru.identifier >> SEQUENCE_BITS
 
-        jwk = _ec_public_jwk(
-            openssl, key_path, kid=ip_info.subject_key_identifier
-        )
+        jwk = _ec_public_jwk(openssl, key_path, kid=key_id)
         document = _build_document(
             ru, ip=ip, domain=domain, anchor_day=anchor_day,
-            day_count=day_count, ski=ip_info.subject_key_identifier, jwk=jwk,
+            day_count=day_count, spki_sha256=key_id, jwk=jwk,
             ptr_name=ptr_name, ptr_targets=ptr_targets, verified_at=verified_at,
             ip_cert=ip_info, domain_cert=domain_info,
         )
@@ -724,7 +732,7 @@ def seal(
         "anchorDay": anchor_day.isoformat(),
         "dayCount": day_count,
         "typeId": type_id,
-        "subjectKeyIdentifier": ip_info.subject_key_identifier,
+        "spkiSha256": key_id,
         "ptr": {"name": ptr_name, "targets": ptr_targets},
         "ipCertificate": ip_info.as_dict(include_path=True),
         "domainCertificate": (
@@ -746,7 +754,7 @@ def seal(
         ruuid=ru, ip=ip, domain=domain, address_family=family, staging=staging,
         challenge=chosen_challenge, webroot=webroot,
         anchor_day=anchor_day, day_count=day_count,
-        subject_key_identifier=ip_info.subject_key_identifier, ptr_name=ptr_name,
+        spki_sha256=key_id, ptr_name=ptr_name,
         ptr_targets=ptr_targets, ip_cert=ip_info, domain_cert=domain_info,
         out_dir=final, document=document, manifest=manifest,
     )
@@ -755,7 +763,7 @@ def seal(
 def _replace_path(info: CertInfo, path: Path) -> CertInfo:
     return CertInfo(
         kind=info.kind, identifier=info.identifier, path=path,
-        subject_key_identifier=info.subject_key_identifier,
+        spki_sha256=info.spki_sha256,
         not_before=info.not_before, not_after=info.not_after,
         serial=info.serial, fingerprint_sha256=info.fingerprint_sha256,
         scts=info.scts,
@@ -786,7 +794,7 @@ def render_report(result: SealResult) -> str:
         f"anchor day:        {result.anchor_day.isoformat()} "
         f"(day_count={result.day_count})"
     )
-    lines.append(f"subject key id:    {result.subject_key_identifier}")
+    lines.append(f"key SPKI-256:      {result.spki_sha256}")
     ic = result.ip_cert
     lines.append(
         f"ip cert:           {ic.not_before.date().isoformat()}.."

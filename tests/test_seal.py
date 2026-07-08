@@ -119,13 +119,11 @@ def test_seal_happy_path(ptr_ns, tmp_path):
     # The minted RUUID's anchor IP is the sealed IP.
     assert str(ru.ip_network.network_address) == IP
 
-    # SKI present and identical across both same-key certs.
-    assert result.subject_key_identifier
+    # SPKI hash present and identical across both same-key certs.
+    assert result.spki_sha256
     assert result.domain_cert is not None
-    assert (
-        result.ip_cert.subject_key_identifier
-        == result.domain_cert.subject_key_identifier
-    )
+    assert result.ip_cert.spki_sha256 == result.domain_cert.spki_sha256
+    assert result.spki_sha256 == result.ip_cert.spki_sha256
 
     # Artifacts on disk.
     out = tmp_path / "seal"
@@ -168,14 +166,14 @@ def test_seal_document_commits_key_and_proof(ptr_ns, tmp_path):
     assert jwk["kty"] == "EC"
     assert jwk["crv"] == "P-256"
     assert jwk["x"] and jwk["y"]    # public point present
-    assert jwk["kid"] == result.subject_key_identifier
+    assert jwk["kid"] == result.spki_sha256
 
     svc = doc["service"][0]
     assert svc["type"] == "CTAnchoredGenesisProof"
     ep = svc["serviceEndpoint"]
     assert ep["ipAddress"] == IP
     assert ep["domain"] == DOMAIN
-    assert ep["subjectKeyIdentifier"] == result.subject_key_identifier
+    assert ep["spkiSha256"] == result.spki_sha256
     assert ep["dayCount"] == result.day_count
     assert ep["ptr"]["name"] == reverse_name_for_ip(IP)
     assert DOMAIN in ep["ptr"]["targets"]
@@ -203,7 +201,7 @@ def test_seal_manifest_wellformed(ptr_ns, tmp_path):
     assert manifest["domain"] == DOMAIN
     assert manifest["staging"] is True
     assert manifest["acmeServer"] == seal_mod.ACME_SERVER_STAGING
-    assert manifest["subjectKeyIdentifier"] == result.subject_key_identifier
+    assert manifest["spkiSha256"] == result.spki_sha256
     assert manifest["ipCertificate"]["kind"] == "ip"
     assert manifest["domainCertificate"]["kind"] == "domain"
     # The operator-local manifest DOES record the on-disk cert paths.

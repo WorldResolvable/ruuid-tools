@@ -195,13 +195,19 @@ can get a valid cert but never one dated back to the anchor day. One
 short-lived cert therefore anchors an entire minting batch — there is no
 renewal treadmill.
 
-`seal` mints an RUUID whose `day_count` falls inside the IP cert's
-validity window and writes a UUID document that commits to the key (a
-`publicKeyJwk` verification method) and the proof (a
-`CTAnchoredGenesisProof` service entry with the SKI, the certs' CT
-coordinates, and the PTR result). Everything lands under
-`~/.ruuid/seals/<uuid>/` (override with `--out`): `key.pem`, the two CSRs
-and certs, `uuid-document.json`, and a `seal.json` manifest.
+The genesis key is an EC (P-256) key that `acme.sh` generates while issuing
+the IP cert (we keep it via `--key-file`); the domain cert reuses it, so
+both certs share one public key. `seal` mints an RUUID whose `day_count`
+falls inside the IP cert's validity window and writes a UUID document that
+commits to the key (a `publicKeyJwk` verification method) and the proof (a
+`CTAnchoredGenesisProof` service entry with the key's `spkiSha256`, the
+certs' CT coordinates, and the PTR result). The `spkiSha256` — the SHA-256
+of the public key — is how a third party pulls the family of certs from CT
+(`crt.sh?spkisha256=<hash>`); it is used instead of the X.509 Subject Key
+Identifier because Let's Encrypt's short-lived profile omits that
+extension. Everything lands under `~/.ruuid/seals/<uuid>/` (override with
+`--out`): `key.pem`, the certs, the domain CSR, `uuid-document.json`, and a
+`seal.json` manifest.
 
 **Prerequisites.** `seal` shells out to [`acme.sh`](https://github.com/acmesh-official/acme.sh)
 (pass `--acme PATH` if it isn't on `$PATH`) and to `openssl`. Real
