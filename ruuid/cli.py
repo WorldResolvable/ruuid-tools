@@ -21,9 +21,9 @@ Subcommands:
                                [--http-port N] [--https-port N]
                                [--rrtype WHAT]
     ruuid seal     <address> <domain> [--type N] [--day DATE] [--out DIR]
-                               [--production] [--challenge WHAT]
+                               [--production] [--challenge WHAT] [--webroot DIR]
                                [--no-domain-cert] [--nameserver HOST[:PORT]]
-                               [--key-bits N] [--acme PATH]
+                               [--acme PATH]
 
 Resolve has five output modes:
   - default: the UUID-document URI on one line (pipeable into curl).
@@ -472,7 +472,6 @@ def cmd_seal(args: argparse.Namespace) -> int:
             webroot=args.webroot,
             domain_cert=args.domain_cert,
             nameserver=args.nameserver,
-            key_bits=args.key_bits,
             acme_path=args.acme,
         )
     except ValueError as e:
@@ -750,10 +749,6 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--nameserver", default=None, metavar="HOST[:PORT]",
         help="DNS server for the PTR verification (default: system resolver)",
-    )
-    s.add_argument(
-        "--key-bits", type=int, default=2048,
-        help="RSA key size in bits (default: 2048; LE requires >= 2048)",
     )
     s.add_argument(
         "--acme", default=None, metavar="PATH",

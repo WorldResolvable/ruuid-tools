@@ -23,13 +23,15 @@ Concretely, `seal(address, domain)`:
      day of issuance. (Let's Encrypt offers no DNS-01 challenge over
      in-addr.arpa / ip6.arpa, so this leg is attested by observation,
      not by a certificate.)
-  2. Generates one RSA key and two CSRs (one with the IP as an
-     `iPAddress` SAN, one with the domain as a `dNSName` SAN).
-  3. Drives `acme.sh` to obtain two Let's Encrypt certificates from those
-     CSRs — an IP-SAN short-lived cert (routing control of the IP,
-     validated by HTTP-01 / TLS-ALPN-01) and a 90-day dNSName cert
-     (control of the domain). Sharing one key gives both certs the same
-     Subject Key Identifier (SKI), linking them in CT.
+  2. Has `acme.sh` issue an IP-SAN short-lived cert (routing control of the
+     IP, validated by HTTP-01 / TLS-ALPN-01). acme.sh generates the EC
+     (P-256) genesis key as part of this and hands it back — the only path
+     that yields a Boulder-valid IP cert (an IP literal in the CSR's Common
+     Name is rejected, and acme.sh's `--signcsr` cannot read an empty CN).
+  3. Issues an optional same-key 90-day `dNSName` cert for the domain
+     (control of the domain) by building a CSR with that same key and
+     submitting it via `acme.sh --signcsr`. One key gives both certs the
+     same Subject Key Identifier (SKI), linking them in CT.
   4. Mints an RUUID whose `day_count` falls inside the IP cert's validity
      window, and emits a UUID document that commits to the SKI and the
      public key.
@@ -127,12 +129,26 @@ class CertInfo:
 class AcmeRequest:
     """One certificate request handed to the ACME runner.
 
-    The default runner (`_run_acme_sh`) turns this into an `acme.sh
-    --signcsr` invocation; tests inject a runner that self-signs the CSR
-    instead. A runner MUST write a PEM certificate (chain) to `cert_out`.
+    Two modes:
+
+      - "issue": acme.sh generates the (EC P-256) key and CSR itself and is
+        told to write the key to `key_path` (--key-file) and the chain to
+        `cert_out` (--fullchain-file). Used for the IP cert — acme.sh only
+        builds a Boulder-valid IP CSR (IP in the SAN, not the Common Name)
+        in its own issue path; `--signcsr` cannot (an IP literal in the CN
+        is rejected, and an empty CN is unreadable by acme.sh).
+      - "signcsr": we supply `csr_path`, built with the *same* key the issue
+        step produced, so both certs share one Subject Key Identifier and
+        link in CT. Used for the domain cert.
+
+    `key_path` is where the private key lives: acme.sh writes it in issue
+    mode; in signcsr mode it already exists (the shared genesis key) and the
+    real runner ignores it (the injected test runner self-signs with it).
+    The default runner (`_run_acme_sh`) turns this into acme.sh flags; a
+    runner MUST write a PEM certificate chain to `cert_out`.
     """
 
-    csr_path: Path
+    mode: str                 # "issue" | "signcsr"
     key_path: Path
     cert_out: Path
     identifier: str           # the IP or domain being certified
@@ -141,6 +157,7 @@ class AcmeRequest:
     staging: bool
     profile: str | None       # SHORTLIVED_PROFILE for the IP cert, else None
     webroot: str | None = None  # if set, HTTP-01 via this webroot (no standalone)
+    csr_path: Path | None = None  # signcsr mode only
 
 
 AcmeRunner = Callable[[AcmeRequest], None]
@@ -192,10 +209,6 @@ def _b64u(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
 
-def _openssl_genrsa(openssl: str, key_path: Path, bits: int) -> None:
-    _run([openssl, "genrsa", "-out", str(key_path), str(bits)])
-
-
 def _openssl_csr(
     openssl: str, key_path: Path, csr_path: Path, *, san: str, cn: str | None = None
 ) -> None:
@@ -215,25 +228,47 @@ def _openssl_csr(
     ])
 
 
-def _rsa_public_jwk(openssl: str, key_path: Path, *, kid: str) -> dict:
-    """Build an RFC 7517 RSA public JWK from a private key via openssl."""
-    modulus_out = _run(
-        [openssl, "rsa", "-in", str(key_path), "-noout", "-modulus"]
-    ).decode()
-    m = re.search(r"Modulus=([0-9A-Fa-f]+)", modulus_out)
-    if not m:
-        raise RuntimeError("could not read RSA modulus from key")
-    n = bytes.fromhex(m.group(1))
+# openssl "NIST CURVE" name -> (JWK crv, coordinate byte length)
+_EC_CURVES = {
+    "P-256": ("P-256", 32),
+    "P-384": ("P-384", 48),
+    "P-521": ("P-521", 66),
+}
 
-    text = _run([openssl, "rsa", "-in", str(key_path), "-noout", "-text"]).decode()
-    em = re.search(r"publicExponent:\s+(\d+)", text)
-    exponent = int(em.group(1)) if em else 65537
-    e = exponent.to_bytes((exponent.bit_length() + 7) // 8 or 1, "big")
+
+def _ec_public_jwk(openssl: str, key_path: Path, *, kid: str) -> dict:
+    """Build an RFC 7517 EC public JWK from a private key via openssl.
+
+    acme.sh issues EC (P-256) keys by default, and that is the only key
+    type that survives its IP-cert CSR path, so the genesis key is EC.
+    """
+    text = _run([openssl, "pkey", "-in", str(key_path), "-noout", "-text"]).decode()
+
+    curve_match = re.search(r"NIST CURVE:\s*(\S+)", text)
+    if not curve_match or curve_match.group(1) not in _EC_CURVES:
+        raise RuntimeError(
+            f"unsupported or unreadable EC curve in key {key_path}"
+        )
+    crv, coord_len = _EC_CURVES[curve_match.group(1)]
+
+    # The public point is printed as a colon-separated hex block between
+    # "pub:" and the "ASN1 OID:" line; it is 0x04 || X || Y (uncompressed).
+    pub_match = re.search(r"pub:\s*(.*?)\n\s*ASN1 OID", text, re.S)
+    if not pub_match:
+        raise RuntimeError(f"could not read EC public point from key {key_path}")
+    point = bytes.fromhex(re.sub(r"[^0-9a-fA-F]", "", pub_match.group(1)))
+    if len(point) != 1 + 2 * coord_len or point[0] != 0x04:
+        raise RuntimeError(
+            f"unexpected EC public point ({len(point)} bytes) in key {key_path}"
+        )
+    x = point[1:1 + coord_len]
+    y = point[1 + coord_len:]
 
     return {
-        "kty": "RSA",
-        "n": _b64u(n),
-        "e": _b64u(e),
+        "kty": "EC",
+        "crv": crv,
+        "x": _b64u(x),
+        "y": _b64u(y),
         "kid": kid,
     }
 
@@ -331,20 +366,32 @@ def _resolve_acme(acme_path: str | None) -> str:
 
 
 def _run_acme_sh(req: AcmeRequest, *, acme_path: str) -> None:
-    """Default ACME runner: `acme.sh --signcsr` against Let's Encrypt.
+    """Default ACME runner: drive acme.sh against Let's Encrypt.
 
-    The exact flags for IP-SAN issuance and the LE short-lived profile are
-    still stabilising in acme.sh; they are confined to this one function so
-    they can be tuned during live testing without touching the rest of the
-    pipeline.
+    In "issue" mode acme.sh generates the key and CSR (the only path that
+    yields a Boulder-valid IP cert) and writes both to our paths; in
+    "signcsr" mode it submits our pre-built CSR. The exact flags for IP-SAN
+    issuance and the LE short-lived profile are still stabilising in
+    acme.sh, so they are confined to this one function for easy tuning
+    without touching the rest of the pipeline.
     """
     server = ACME_SERVER_STAGING if req.staging else ACME_SERVER_PRODUCTION
-    argv = [
-        acme_path, "--signcsr",
-        "--csr", str(req.csr_path),
-        "--server", server,
-        "--fullchain-file", str(req.cert_out),
-    ]
+    if req.mode == "issue":
+        argv = [
+            acme_path, "--issue",
+            "-d", req.identifier,
+            "--key-file", str(req.key_path),
+            "--fullchain-file", str(req.cert_out),
+            "--server", server,
+            "--force",
+        ]
+    else:
+        argv = [
+            acme_path, "--signcsr",
+            "--csr", str(req.csr_path),
+            "--fullchain-file", str(req.cert_out),
+            "--server", server,
+        ]
     if req.webroot:
         # Webroot HTTP-01: acme.sh drops the challenge token under
         # <webroot>/.well-known/acme-challenge/ and the already-running
@@ -362,6 +409,10 @@ def _run_acme_sh(req: AcmeRequest, *, acme_path: str) -> None:
     if not req.cert_out.exists():
         raise RuntimeError(
             f"acme.sh completed but no certificate was written to {req.cert_out}"
+        )
+    if req.mode == "issue" and not req.key_path.exists():
+        raise RuntimeError(
+            f"acme.sh completed but no key was written to {req.key_path}"
         )
 
 
@@ -541,17 +592,17 @@ def seal(
     webroot: str | None = None,
     domain_cert: bool = True,
     nameserver: str | None = None,
-    key_bits: int = 2048,
     acme_path: str | None = None,
     acme_runner: AcmeRunner | None = None,
 ) -> SealResult:
     """Establish a CT-anchored genesis proof for an RUUID; see module docstring.
 
-    Verifies the PTR, issues one (IP-SAN) or two (IP-SAN + dNSName)
-    same-key Let's Encrypt certificates via acme.sh, mints an RUUID whose
-    `day_count` falls inside the IP cert's window, and writes the key,
-    CSRs, certs, a committing UUID document, and a `seal.json` manifest
-    into `out_dir` (default `~/.ruuid/seals/<uuid>/`).
+    Verifies the PTR, has acme.sh issue the IP-SAN cert (which also
+    generates the EC genesis key), issues an optional same-key dNSName cert
+    for the domain, mints an RUUID whose `day_count` falls inside the IP
+    cert's window, and writes the key, certs, a committing UUID document,
+    and a `seal.json` manifest into `out_dir` (default
+    `~/.ruuid/seals/<uuid>/`).
 
     Raises:
         ValueError: the address is unresolvable, the PTR does not map the
@@ -576,21 +627,18 @@ def seal(
         resolved = _resolve_acme(acme_path)
         acme_runner = lambda req: _run_acme_sh(req, acme_path=resolved)  # noqa: E731
 
-    # 2-3. Key, CSRs, and certificates — worked in a temp dir, then copied
-    # into the final out_dir once the RUUID (and thus the default path) is
-    # known.
+    # 2-3. Certificates — worked in a temp dir, then copied into the final
+    # out_dir once the RUUID (and thus the default path) is known. The IP
+    # cert is issued by acme.sh, which also generates the EC genesis key and
+    # writes it to key_path; the domain cert then reuses that key via a CSR
+    # so both certs share one SKI.
     with tempfile.TemporaryDirectory(prefix="ruuid-seal-") as tmp:
         tmpd = Path(tmp)
         key_path = tmpd / "key.pem"
-        _openssl_genrsa(openssl, key_path, key_bits)
 
-        ip_csr = tmpd / "ip.csr"
-        san_ip = f"IP:{ip}"
-        # No CN for the IP cert — an IP literal in the CN is rejected as badCSR.
-        _openssl_csr(openssl, key_path, ip_csr, san=san_ip, cn=None)
         ip_cert_path = tmpd / "ip-cert.pem"
         acme_runner(AcmeRequest(
-            csr_path=ip_csr, key_path=key_path, cert_out=ip_cert_path,
+            mode="issue", key_path=key_path, cert_out=ip_cert_path,
             identifier=ip, is_ip=True, challenge=chosen_challenge,
             staging=staging, profile=SHORTLIVED_PROFILE, webroot=webroot,
         ))
@@ -606,7 +654,7 @@ def seal(
             )
             domain_cert_path = tmpd / "domain-cert.pem"
             acme_runner(AcmeRequest(
-                csr_path=domain_csr, key_path=key_path,
+                mode="signcsr", key_path=key_path, csr_path=domain_csr,
                 cert_out=domain_cert_path, identifier=domain, is_ip=False,
                 challenge=chosen_challenge, staging=staging, profile=None,
                 webroot=webroot,
@@ -626,7 +674,7 @@ def seal(
         ru = new_ruuid(ip, type_id=type_id, day=anchor_dt)
         day_count = ru.identifier >> SEQUENCE_BITS
 
-        jwk = _rsa_public_jwk(
+        jwk = _ec_public_jwk(
             openssl, key_path, kid=ip_info.subject_key_identifier
         )
         document = _build_document(
@@ -655,7 +703,6 @@ def seal(
             key_dst.chmod(0o600)
         except OSError:
             pass
-        shutil.copy(ip_csr, final / "ip.csr")
         shutil.copy(ip_cert_path, final / "ip-cert.pem")
         ip_info = _replace_path(ip_info, final / "ip-cert.pem")
         if domain_info is not None and domain_csr and domain_cert_path:
@@ -685,7 +732,6 @@ def seal(
         ),
         "artifacts": {
             "key": str(final / "key.pem"),
-            "ipCsr": str(final / "ip.csr"),
             "ipCert": str(final / "ip-cert.pem"),
             "domainCsr": str(final / "domain.csr") if domain_info else None,
             "domainCert": str(final / "domain-cert.pem") if domain_info else None,

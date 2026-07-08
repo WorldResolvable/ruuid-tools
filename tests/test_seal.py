@@ -32,20 +32,37 @@ DOMAIN = "example.com"
 # --- fake ACME runner ----------------------------------------------------
 
 def _self_sign(req: AcmeRequest) -> None:
-    """Self-sign `req`'s CSR into `req.cert_out`, standing in for LE.
+    """Stand in for acme.sh: produce a self-signed cert for `req`.
 
-    Copies the CSR's SAN and adds a hash-based Subject Key Identifier
+    In "issue" mode, generate an EC (P-256) key at `req.key_path` (as
+    acme.sh would) and self-sign; in "signcsr" mode, self-sign the supplied
+    CSR with the shared key. A hash-based Subject Key Identifier is added
     (matching how a real CA derives the SKI from the public key), so the
-    parsing/SKI code exercises a genuine certificate. IP certs get a
+    parsing/SKI/JWK code exercises a genuine certificate. IP certs get a
     ~7-day window (like LE's short-lived profile); domain certs 90 days.
     """
     san = f"IP:{req.identifier}" if req.is_ip else f"DNS:{req.identifier}"
-    ext = req.cert_out.parent / f"{req.cert_out.stem}-ext.cnf"
+    work = req.cert_out.parent
+    if req.mode == "issue":
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "EC",
+             "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(req.key_path)],
+            check=True, capture_output=True,
+        )
+        csr = work / f"{req.cert_out.stem}-fake.csr"
+        subprocess.run(
+            ["openssl", "req", "-new", "-key", str(req.key_path), "-subj", "/",
+             "-addext", f"subjectAltName={san}", "-out", str(csr)],
+            check=True, capture_output=True,
+        )
+    else:
+        csr = req.csr_path
+    ext = work / f"{req.cert_out.stem}-ext.cnf"
     ext.write_text(f"subjectKeyIdentifier=hash\nsubjectAltName={san}\n")
     days = "7" if req.is_ip else "90"
     subprocess.run(
         [
-            "openssl", "x509", "-req", "-in", str(req.csr_path),
+            "openssl", "x509", "-req", "-in", str(csr),
             "-signkey", str(req.key_path), "-days", days,
             "-extfile", str(ext), "-out", str(req.cert_out),
         ],
@@ -113,7 +130,7 @@ def test_seal_happy_path(ptr_ns, tmp_path):
     # Artifacts on disk.
     out = tmp_path / "seal"
     for name in (
-        "key.pem", "ip.csr", "ip-cert.pem", "domain.csr", "domain-cert.pem",
+        "key.pem", "ip-cert.pem", "domain.csr", "domain-cert.pem",
         "uuid-document.json", "seal.json",
     ):
         assert (out / name).exists(), name
@@ -148,9 +165,9 @@ def test_seal_document_commits_key_and_proof(ptr_ns, tmp_path):
     vm = doc["verificationMethod"][0]
     assert vm["type"] == "JsonWebKey"
     jwk = vm["publicKeyJwk"]
-    assert jwk["kty"] == "RSA"
-    assert jwk["e"] == "AQAB"       # exponent 65537
-    assert jwk["n"]                 # modulus present
+    assert jwk["kty"] == "EC"
+    assert jwk["crv"] == "P-256"
+    assert jwk["x"] and jwk["y"]    # public point present
     assert jwk["kid"] == result.subject_key_identifier
 
     svc = doc["service"][0]
@@ -345,48 +362,57 @@ def _capture_acme_argv(tmp_path, monkeypatch):
 
     def fake_run(argv, *, input_bytes=None):
         captured["argv"] = argv
-        (tmp_path / "cert.pem").write_text("stub")   # satisfy existence check
+        # satisfy the post-run existence checks (cert always; key in issue mode)
+        (tmp_path / "cert.pem").write_text("stub")
+        (tmp_path / "key.pem").write_text("stub")
         return b""
 
     monkeypatch.setattr(seal_mod, "_run", fake_run)
     return captured
 
 
-def test_run_acme_sh_argv_webroot(tmp_path, monkeypatch):
+def test_run_acme_sh_argv_issue_webroot(tmp_path, monkeypatch):
+    # IP cert: issue mode + webroot + shortlived profile.
     captured = _capture_acme_argv(tmp_path, monkeypatch)
     req = AcmeRequest(
-        csr_path=tmp_path / "ip.csr", key_path=tmp_path / "key.pem",
+        mode="issue", key_path=tmp_path / "key.pem",
         cert_out=tmp_path / "cert.pem", identifier=IP, is_ip=True,
         challenge="http-01", staging=True, profile=seal_mod.SHORTLIVED_PROFILE,
         webroot="/var/www/acme",
     )
     seal_mod._run_acme_sh(req, acme_path="acme.sh")
     argv = captured["argv"]
+    assert "--issue" in argv and "-d" in argv and IP in argv
+    assert "--key-file" in argv and "--fullchain-file" in argv
     assert "-w" in argv and "/var/www/acme" in argv
     assert "--standalone" not in argv and "--alpn" not in argv
-    assert "--signcsr" in argv
+    assert "--signcsr" not in argv
     assert "letsencrypt_test" in argv                # staging server
     assert "--cert-profile" in argv and "shortlived" in argv
 
 
-def test_run_acme_sh_argv_standalone_modes(tmp_path, monkeypatch):
-    # TLS-ALPN-01, production, no profile.
+def test_run_acme_sh_argv_signcsr_standalone_modes(tmp_path, monkeypatch):
+    # Domain cert: signcsr, TLS-ALPN-01, production, no profile.
     captured = _capture_acme_argv(tmp_path, monkeypatch)
     req = AcmeRequest(
-        csr_path=tmp_path / "d.csr", key_path=tmp_path / "key.pem",
-        cert_out=tmp_path / "cert.pem", identifier=DOMAIN, is_ip=False,
-        challenge="tls-alpn-01", staging=False, profile=None, webroot=None,
+        mode="signcsr", key_path=tmp_path / "key.pem",
+        csr_path=tmp_path / "d.csr", cert_out=tmp_path / "cert.pem",
+        identifier=DOMAIN, is_ip=False, challenge="tls-alpn-01",
+        staging=False, profile=None, webroot=None,
     )
     seal_mod._run_acme_sh(req, acme_path="acme.sh")
     argv = captured["argv"]
+    assert "--signcsr" in argv and "--csr" in argv
+    assert "--issue" not in argv
     assert "--alpn" in argv and "-w" not in argv and "--standalone" not in argv
     assert "letsencrypt" in argv and "letsencrypt_test" not in argv
 
     # HTTP-01 standalone.
     req2 = AcmeRequest(
-        csr_path=tmp_path / "d.csr", key_path=tmp_path / "key.pem",
-        cert_out=tmp_path / "cert.pem", identifier=DOMAIN, is_ip=False,
-        challenge="http-01", staging=True, profile=None, webroot=None,
+        mode="signcsr", key_path=tmp_path / "key.pem",
+        csr_path=tmp_path / "d.csr", cert_out=tmp_path / "cert.pem",
+        identifier=DOMAIN, is_ip=False, challenge="http-01",
+        staging=True, profile=None, webroot=None,
     )
     seal_mod._run_acme_sh(req2, acme_path="acme.sh")
     assert "--standalone" in captured["argv"] and "-w" not in captured["argv"]
