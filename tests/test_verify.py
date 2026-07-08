@@ -68,6 +68,22 @@ class FakeCt:
         return list(self._certs)
 
 
+class FakeCtBySpki:
+    """CT source that returns different certs per key — models several keys
+    (ours + a commandeering party's) coexisting in CT."""
+
+    def __init__(self, mapping):
+        self._m = mapping
+
+    def certs_for_spki(self, spki):
+        return list(self._m.get(spki, []))
+
+
+def _b64u(b: bytes) -> str:
+    import base64
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
 # day_count 553 == 2026-07-08; a 7-day IP cert covering it:
 GENESIS_CERT = _cert(
     ip_sans=(IP,), nb="2026-07-07T23:15:18+00:00",
@@ -142,6 +158,42 @@ def test_verify_through_ip_and_domain_changes_single_key():
     assert len(result.timeline) == 3
     assert sum(a.is_genesis for a in result.timeline) == 1
     assert result.genesis.serial == "genesis"
+
+
+def test_old_ruuid_still_verifies_after_moving_to_a_new_ip():
+    # We moved off IP_old to IP_new (same key K); IP_old's genesis cert is
+    # permanent in CT. An old RUUID (IP_old, day 553) still verifies, and the
+    # timeline shows the move.
+    ru = RUUID.from_str(RU_STR)              # anchored to IP_old = 100.57.12.254
+    moved = _cert(ip_sans=("203.0.113.9",), nb="2026-09-01T00:00:00+00:00",
+                  na="2026-09-08T00:00:00+00:00", serial="new-eip", cid=201)
+    result, _ = verify_ruuid(
+        ru, _document(), ct_source=FakeCt([GENESIS_CERT, moved])
+    )
+    assert result.verified
+    assert result.genesis.serial == "genesis"     # old IP cert, still authority
+    assert {a.serial for a in result.timeline} == {"genesis", "new-eip"}
+
+
+def test_verify_rejects_commandeered_old_ip():
+    # After we release IP_old, a new owner acquires it and gets a *real*
+    # IP_old certificate — but dated to THEIR tenure (Sept), never the old
+    # day (Jul 8). They serve a document committing their key K'. It must NOT
+    # verify the old RUUID: CT is backdate-proof, so K' has no cert covering
+    # the RUUID's day. Meanwhile the genuine document (key K) still verifies.
+    ru = RUUID.from_str(RU_STR)              # old RUUID, IP_old, day 553 (Jul 8)
+    impostor_jwk = {"kty": "EC", "crv": "P-256",
+                    "x": _b64u(b"\x11" * 32), "y": _b64u(b"\x22" * 32)}
+    impostor_spki = spki_sha256_from_jwk(impostor_jwk)
+    impostor_cert = _cert(ip_sans=(IP,), nb="2026-09-01T00:00:00+00:00",
+                          na="2026-09-08T00:00:00+00:00", serial="commandeer")
+    ct = FakeCtBySpki({SPKI: [GENESIS_CERT], impostor_spki: [impostor_cert]})
+
+    genuine, _ = verify_ruuid(ru, _document(), ct_source=ct)
+    assert genuine.verified                       # our key still wins
+
+    impostor, _ = verify_ruuid(ru, _document(jwk=impostor_jwk), ct_source=ct)
+    assert not impostor.verified                  # their real-but-late cert can't cover Jul 8
 
 
 def test_verify_roundtrips_through_json_custody():
