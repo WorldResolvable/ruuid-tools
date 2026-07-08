@@ -1,4 +1,4 @@
-.TH RUUID 1 "May 2026" "ruuid-tools" "User Commands"
+.TH RUUID 1 "July 2026" "ruuid-tools" "User Commands"
 .SH NAME
 ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .SH SYNOPSIS
@@ -52,6 +52,34 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .IR N ]
 .RB [ --rrtype
 .IR TYPE ]
+.br
+.B ruuid seal
+.I ADDRESS
+.I DOMAIN
+.RB [ --type
+.IR N ]
+.RB [ --day
+.IR DATE ]
+.RB [ --production ]
+.RB [ --challenge
+.IR WHAT ]
+.RB [ --webroot
+.IR DIR ]
+.RB [ --no-domain-cert ]
+.RB [ --nameserver
+.IR HOST [: PORT ]]
+.RB [ --out
+.IR DIR ]
+.RB [ --acme
+.IR PATH ]
+.br
+.B ruuid coverage
+.I ADDRESS
+.RB [ --day
+.IR DATE ]
+.RB [ --seals
+.IR DIR ]
+.RB [ --include-staging ]
 .SH DESCRIPTION
 .B ruuid
 is the reference CLI for Resolvable UUIDs, a UUIDv8 variant whose 64-bit
@@ -281,6 +309,147 @@ serves HTTPS alongside HTTP. The
 .B ruuid resolve
 side trusts the same file with hostname checking off (the demo cert is
 shared across many demo hostnames).
+.SH SEAL
+.B ruuid seal \fIADDRESS\fR \fIDOMAIN\fR [options]
+.PP
+.B (Experimental.)
+Establish a Certificate-Transparency-anchored genesis proof for an RUUID:
+durable, third-party-checkable evidence that the issuer controlled the anchor
+\(em as of the day of issuance \(em even after the IP prefix, its reverse zone,
+or the domain later change hands. Proves, as of the anchor day, control of the
+IP address, its reverse zone
+.RI ( PTR " \[->] " DOMAIN ),
+and the domain. Requires
+.B acme.sh
+and
+.BR openssl .
+.PP
+The command verifies the PTR, then has
+.B acme.sh
+obtain two same-key Let's Encrypt certificates \(em an IP-SAN short-lived cert
+(routing control of the IP, validated by HTTP-01 or TLS-ALPN-01) and a 90-day
+.I dNSName
+cert (control of the domain). acme.sh generates the EC (P-256) genesis key while
+issuing the IP cert; the domain cert reuses it, so both share one public key and
+link in Certificate Transparency under a single SPKI hash. An RUUID is minted
+whose
+.I day_count
+falls inside the IP cert's validity window, and a UUID document is written that
+commits to the key
+.RI ( publicKeyJwk )
+and the proof (a
+.I CTAnchoredGenesisProof
+service entry with the key's
+.IR spkiSha256 ,
+the certs' CT coordinates, and the PTR result). Artifacts land under
+.I ~/.ruuid/seals/<uuid>/
+(override with
+.BR --out ):
+the key, the certs, the domain CSR,
+.IR uuid-document.json ,
+and a
+.I seal.json
+manifest.
+.PP
+The proof is historical, not live: the certs are frozen in CT with permanent
+SCTs, so one short-lived cert anchors an unbounded batch of RUUIDs sharing the
+same
+.RI ( network , " day_count" ).
+See
+.B ruuid coverage
+for checking which issue-days a seal already covers.
+.TP
+.B \-\-type \fIN\fR
+10-bit type field for the minted RUUID (default 0).
+.TP
+.B \-\-day \fIDATE\fR
+Anchor day
+.RB ( YYYY-MM-DD
+or integer
+.IR day_count );
+MUST fall inside the IP cert's validity window and MUST NOT be in the future.
+Default: today UTC, clamped into the window.
+.TP
+.B \-\-production
+Use the real Let's Encrypt endpoint (real CT logging) instead of the default
+staging endpoint. Staging exercises the identical flow from an untrusted root and
+test CT logs.
+.TP
+.B \-\-challenge \fIauto\fR|\fIhttp-01\fR|\fItls-alpn-01\fR
+ACME challenge for the IP anchor (DNS-01 is invalid for IP identifiers).
+.I auto
+(default) prefers TLS-ALPN-01, which needs no port-80 takeover, and falls back to
+HTTP-01. Ignored when
+.B --webroot
+is given.
+.TP
+.B \-\-webroot \fIDIR\fR
+Serve the HTTP-01 challenge from an already-running web server's webroot instead
+of a standalone listener \(em no port takeover, no downtime. Forces HTTP-01. The
+server must serve
+.I DIR/.well-known/acme-challenge/
+for both the domain and the bare IP (add a static carve-out if the site is
+otherwise reverse-proxied).
+.TP
+.B \-\-no-domain-cert
+Skip the same-key domain cert; certify only the IP (domain control then rests on
+the local PTR check alone).
+.TP
+.B \-\-nameserver \fIHOST\fR[:\fIPORT\fR]
+DNS server for the PTR verification (default: system resolver).
+.TP
+.B \-\-out \fIDIR\fR
+Directory for the artifacts (default
+.IR ~/.ruuid/seals/<uuid>/ ).
+.TP
+.B \-\-acme \fIPATH\fR
+Path to the
+.B acme.sh
+script (default: found on
+.I PATH
+or
+.IR ~/.acme.sh/acme.sh ).
+.SH COVERAGE
+.B ruuid coverage \fIADDRESS\fR [options]
+.PP
+.B (Experimental.)
+Report which issue-days
+.RI ( day_count )
+are already provable for an anchor. A genesis certificate is never renewed for
+liveness \(em the proof is historical, frozen in CT; a fresh
+.B ruuid seal
+is only needed to mint on a day no existing certificate's validity window covers.
+Each
+.I seal.json
+records the IP cert's window, so
+.B coverage
+lists the coverable day ranges (merging adjacent or overlapping windows) and,
+with
+.BR --day ,
+checks one date \(em exiting non-zero when it is not covered, so it scripts a
+"seal only when needed" workflow:
+.PP
+.RS
+.nf
+$ ruuid coverage 100.57.12.254 --day 2026-09-01 \[rs]
+      || ruuid seal 100.57.12.254 uuid.zone --production
+.fi
+.RE
+.TP
+.B \-\-day \fIDATE\fR
+Check whether this day
+.RB ( YYYY-MM-DD
+or integer
+.IR day_count )
+is covered; exit 1 if not.
+.TP
+.B \-\-seals \fIDIR\fR
+Directory of seal records to read (default
+.IR ~/.ruuid/seals/ ).
+.TP
+.B \-\-include-staging
+Also count staging seals. By default only production seals count, since a staging
+certificate lands only in staging CT and proves nothing to third parties.
 .SH FILES
 .TP
 .I /etc/ruuid/anchor-cert.pem
@@ -299,6 +468,19 @@ The CLI launcher dropped by
 The CLI launcher dropped by
 .I make deps
 (per-user install).
+.TP
+.I ~/.ruuid/seals/<uuid>/
+Per-anchor records written by
+.BR "ruuid seal" :
+the genesis key
+.RI ( key.pem ,
+owner-only), the certificates, the committing
+.IR uuid-document.json ,
+and a
+.I seal.json
+manifest.
+.B ruuid coverage
+reads these.
 .SH EXAMPLES
 Mint an RUUID and resolve it against a local anchor (the default
 .B --registry
