@@ -642,13 +642,22 @@ def _ct_cache(args: argparse.Namespace):
 
 
 def _ct_source(args: argparse.Namespace):
-    """A CT source from --bundles (pre-downloaded custody bundles), or None
-    to use the default live crt.sh source."""
+    """The CT source implied by the flags, or None for the default live crt.sh.
+
+    --fetch-bundles builds the discovery cascade (local bundles -> the issuer's
+    published /.well-known/uuid-custody.json -> crt.sh); --bundles alone reads
+    a directory of pre-downloaded bundles offline.
+    """
     bundles = getattr(args, "bundles", None)
-    if not bundles:
-        return None
-    from ruuid.verify import LocalBundleSource
-    return LocalBundleSource(bundles)
+    if getattr(args, "fetch_bundles", False):
+        from ruuid.verify import CascadingSource
+        return CascadingSource(
+            bundles_dir=bundles, nameserver=getattr(args, "nameserver", None)
+        )
+    if bundles:
+        from ruuid.verify import LocalBundleSource
+        return LocalBundleSource(bundles)
+    return None
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -840,6 +849,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--bundles", default=None, metavar="DIR",
         help="with --verify, verify off a directory of pre-downloaded "
              "published custody bundles instead of live crt.sh",
+    )
+    r.add_argument(
+        "--fetch-bundles", action="store_true",
+        help="with --verify, discovery cascade: local --bundles -> the "
+             "issuer's published /.well-known/uuid-custody.json -> crt.sh "
+             "(fetched bundles are cached)",
     )
     r.set_defaults(func=cmd_resolve)
 
@@ -1101,6 +1116,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--bundles", default=None, metavar="DIR",
         help="verify off a directory of pre-downloaded published custody "
              "bundles (uuid-custody.json) instead of live crt.sh",
+    )
+    v.add_argument(
+        "--fetch-bundles", action="store_true",
+        help="discovery cascade: local --bundles dir (default ~/.ruuid/"
+             "bundles) -> the issuer's published /.well-known/uuid-custody.json "
+             "(resolved via the RUUID's IP) -> crt.sh; fetched bundles are "
+             "cached, so unknown issuers become locally known",
+    )
+    v.add_argument(
+        "--nameserver", default=None, metavar="HOST[:PORT]",
+        help="with --fetch-bundles, DNS server for the PTR/domain lookup",
     )
     v.add_argument(
         "--emit-custody", default=None, metavar="FILE",

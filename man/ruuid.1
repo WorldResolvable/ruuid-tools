@@ -674,6 +674,20 @@ instead of live crt.sh. The bundles' certificates are unioned and indexed by IP
 and key locally, so verification runs entirely offline. Also accepted by
 .BR "resolve --verify" .
 .TP
+.B \-\-fetch-bundles
+Discovery cascade for public/decentralized intake: local
+.B \-\-bundles
+directory (default
+.IR ~/.ruuid/bundles )
+\(->\& the issuer's published
+.I /.well-known/uuid-custody.json
+(resolved via the RUUID's IP by PTR) \(->\& crt.sh. Fetched bundles are cached, so
+an unknown issuer becomes locally known for every sibling RUUID. Discovery only \(em
+verification still checks the certificates against the RUUID's own CT genesis and
+chain, so a wrong or hostile domain can never mislead, only fail to help. Also
+accepted by
+.BR "resolve --verify" .
+.TP
 .B \-\-emit-custody \fIFILE\fR
 Write the custody bundle used for verification to
 .IR FILE .

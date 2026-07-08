@@ -416,6 +416,31 @@ This turns crt.sh from a hard dependency into an optional independent-audit
 fallback: the bundles supply the evidence, and each certificate remains
 independently checkable against CT via its embedded SCTs.
 
+#### Discovery cascade: `--fetch-bundles`
+
+A public or decentralized service takes in RUUIDs it has *never seen*, issued
+by parties it doesn't know. `--fetch-bundles` turns discovery into an
+automatic cascade — **local bundles → the issuer's published bundle → crt.sh**:
+
+```
+$ ruuid verify <ruuid> uuid-document.json --fetch-bundles
+$ ruuid resolve <ruuid> --verify --fetch-bundles
+```
+
+On a local miss it resolves the RUUID's IP to a domain (PTR) and fetches
+`https://<domain>/.well-known/uuid-custody.json`; that self-authenticating
+bundle is cached (default `~/.ruuid/bundles/`, override with `--bundles DIR`),
+so an unknown issuer becomes locally known for every sibling RUUID thereafter.
+crt.sh is the final, cooperation-free fallback for issuers who publish nothing.
+
+Every layer is **discovery only** — verification still checks the fetched
+certificates against *this* RUUID's CT genesis and commitment chain — so a
+stale PTR or a hostile domain serving a bogus bundle can only fail to help,
+never mislead: a wrong bundle simply won't contain a genesis chain to the
+document's key, and the cascade falls through. Over time the three
+intake cases converge: self-issued and cooperating issuers are already local,
+and the long tail of novel issuers is fetched once and cached.
+
 #### Commandeering-safe resolution: `resolve --verify`
 
 Plain `resolve` follows the PTR to whatever document the current IP holder

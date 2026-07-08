@@ -375,6 +375,94 @@ def test_cli_verify_off_bundles(tmp_path, capsys):
     assert "VERIFIED" in out and "custody chain" in out
 
 
+# --- discovery cascade: local -> issuer bundle -> crt.sh -----------------
+
+def _issuer_bundle_bytes(ru):
+    return json.dumps(
+        gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
+    ).encode()
+
+
+def test_cascade_fetches_and_caches_issuer_bundle(tmp_path):
+    from ruuid.verify import CascadingSource
+    ru = RUUID.from_str(RU_STR)
+    calls = {"fetch": 0}
+
+    def fake_fetch(uri):
+        calls["fetch"] += 1
+        assert uri == "https://issuer.example/.well-known/uuid-custody.json"
+        return _issuer_bundle_bytes(ru)
+
+    src = CascadingSource(
+        bundles_dir=tmp_path / "bundles", use_crtsh=False,
+        resolve_domains=lambda ip: ["issuer.example"], fetch=fake_fetch,
+    )
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=src)
+    assert result.verified and result.chain == (SPKI, K2_SPKI)
+    assert calls["fetch"] == 1                    # fetched the issuer bundle once
+
+    # persisted -> a fresh cascade verifies with NO fetch and NO crt.sh
+    def boom(*a):
+        raise AssertionError("should not be called")
+
+    src2 = CascadingSource(bundles_dir=tmp_path / "bundles", use_crtsh=False,
+                           resolve_domains=boom, fetch=boom)
+    r2, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=src2)
+    assert r2.verified                            # served from the cached bundle
+
+
+def test_cascade_falls_back_to_crtsh(tmp_path):
+    from ruuid.verify import CascadingSource
+    ru = RUUID.from_str(RU_STR)
+    src = CascadingSource(
+        bundles_dir=tmp_path / "b",
+        crtsh_source=FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]),
+        resolve_domains=lambda ip: ["nobody.example"],
+        fetch=lambda uri: None,                   # issuer has no published bundle
+    )
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=src)
+    assert result.verified and result.chain == (SPKI, K2_SPKI)
+
+
+def test_cascade_local_bundle_short_circuits(tmp_path):
+    from ruuid.verify import CascadingSource
+    ru = RUUID.from_str(RU_STR)
+    d = tmp_path / "b"
+    d.mkdir()
+    (d / "issuer.json").write_text(
+        json.dumps(gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3])))
+    )
+
+    def boom(*a):
+        raise AssertionError("neither fetch nor crt.sh should run")
+
+    src = CascadingSource(bundles_dir=d, use_crtsh=False,
+                          resolve_domains=boom, fetch=boom)
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=src)
+    assert result.verified                        # fully local, no discovery
+
+
+def test_cascade_wrong_domain_bundle_is_not_misleading(tmp_path):
+    # A commandeer serves a bundle for a DIFFERENT identity; it must not verify
+    # our RUUID — discovery is untrusted, CT genesis is the authority.
+    from ruuid.verify import CascadingSource
+    ru = RUUID.from_str(RU_STR)
+    impostor_genesis = _cert(ip_sans=(IP,), nb="2026-07-07T00:00:00+00:00",
+                             na="2026-07-14T00:00:00+00:00", serial="imp",
+                             cid=901, spki=IMPOSTOR_SPKI)
+    wrong = json.dumps({"kind": "uuid-custody",
+                        "certificates": [impostor_genesis.as_dict()]}).encode()
+    src = CascadingSource(
+        bundles_dir=tmp_path / "b", use_crtsh=False,
+        resolve_domains=lambda ip: ["commandeer.example"],
+        fetch=lambda uri: wrong,
+    )
+    # our document commits the real K2; the fetched (impostor) bundle can't
+    # produce a genesis chain to it
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=src)
+    assert not result.verified
+
+
 # --- per-IP cache / local green-lighting ---------------------------------
 
 class CountingCt(FakeCt):

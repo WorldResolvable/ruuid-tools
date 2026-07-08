@@ -295,11 +295,156 @@ class LocalBundleSource:
             by_serial.setdefault(c.serial, c)
         self._certs_list = list(by_serial.values())
 
+    def all_certs(self) -> list[CtCert]:
+        return list(self._certs_list)
+
     def certs_for_ip(self, ip: str) -> list[CtCert]:
         return [c for c in self._certs_list if ip in c.ip_sans]
 
     def certs_for_spki(self, spki_sha256: str) -> list[CtCert]:
         return [c for c in self._certs_list if c.spki_sha256 == spki_sha256]
+
+
+def _safe_name(s: str) -> str:
+    return "".join(ch if (ch.isalnum() or ch in ".-_") else "_" for ch in s)
+
+
+class CascadingSource:
+    """A discovery cascade `CtSource`: local bundles -> the issuer's published
+    bundle -> crt.sh.
+
+    For public/decentralized intake, where you receive RUUIDs you have never
+    seen and don't know who issued. On a local miss, it resolves the IP's
+    domain (PTR) and GETs `https://<domain>/.well-known/uuid-custody.json`;
+    that (self-authenticating) bundle is added to the pool and persisted, so
+    an unknown issuer becomes locally known for every sibling RUUID
+    thereafter. crt.sh is the final, cooperation-free fallback.
+
+    Every layer is DISCOVERY only — verification still checks the certificates
+    against the RUUID's own CT genesis and commitment chain — so a wrong or
+    hostile issuer domain can only fail to help, never mislead. (Like the
+    per-IP cache, a persisted bundle green-lights the genesis facts, which are
+    immutable; a document committing a *newly* rotated key not yet in a
+    persisted bundle re-fetches / falls through to crt.sh only if the local
+    pool doesn't already reach it — force a refresh by clearing the dir.)
+    """
+
+    _WELL_KNOWN = "https://{domain}/.well-known/uuid-custody.json"
+
+    def __init__(
+        self,
+        *,
+        bundles_dir: "Path | str | None" = None,
+        use_crtsh: bool = True,
+        crtsh_source: "CtSource | None" = None,
+        persist: bool = True,
+        nameserver: str | None = None,
+        timeout: float = 15.0,
+        resolve_domains=None,
+        fetch=None,
+    ) -> None:
+        self._dir = (
+            Path(bundles_dir) if bundles_dir is not None
+            else Path.home() / ".ruuid" / "bundles"
+        )
+        self._pool: dict[str, CtCert] = {}
+        if self._dir.exists():
+            for c in LocalBundleSource(self._dir).all_certs():
+                self._pool.setdefault(c.serial, c)
+        self._crtsh = (
+            crtsh_source if crtsh_source is not None
+            else (CrtShSource() if use_crtsh else None)
+        )
+        self._persist = persist
+        self._nameserver = nameserver
+        self._timeout = timeout
+        self._resolve_domains = resolve_domains or self._ptr_domains
+        self._fetch = fetch or self._http_fetch
+        self._tried_ips: set[str] = set()
+
+    def _add(self, certs: list[CtCert]) -> None:
+        for c in certs:
+            self._pool.setdefault(c.serial, c)
+
+    # The pool holds only whole published bundles (complete per key), so a
+    # pool hit is authoritative. crt.sh is delegated live — it returns the
+    # complete result per query — and is NOT merged into the pool, so a
+    # partial crt.sh result can never short-circuit a later chain hop.
+    def certs_for_ip(self, ip: str) -> list[CtCert]:
+        got = [c for c in self._pool.values() if ip in c.ip_sans]
+        if got:
+            return got
+        if ip not in self._tried_ips:                 # 2. the issuer's bundle
+            self._tried_ips.add(ip)
+            if self._fetch_issuer(ip):
+                got = [c for c in self._pool.values() if ip in c.ip_sans]
+                if got:
+                    return got
+        if self._crtsh is not None:                   # 3. crt.sh (live)
+            return self._crtsh.certs_for_ip(ip)
+        return got
+
+    def certs_for_spki(self, spki_sha256: str) -> list[CtCert]:
+        got = [c for c in self._pool.values() if c.spki_sha256 == spki_sha256]
+        if got:
+            return got
+        if self._crtsh is not None:
+            return self._crtsh.certs_for_spki(spki_sha256)
+        return got
+
+    def _fetch_issuer(self, ip: str) -> bool:
+        for domain in self._resolve_domains(ip):
+            body = self._fetch(self._WELL_KNOWN.format(domain=domain))
+            if not body:
+                continue
+            try:
+                obj = json.loads(body)
+            except (ValueError, TypeError):
+                continue
+            certs = _bundle_certs(obj)
+            if certs:
+                self._add(certs)
+                if self._persist:
+                    self._save(_safe_name(domain), obj)
+                return True
+        return False
+
+    def _ptr_domains(self, ip: str) -> list[str]:
+        from ruuid.resolve import DnsTransport, reverse_name_for_ip
+        ns, port = None, 53
+        if self._nameserver:
+            host, _, p = self._nameserver.partition(":")
+            ns, port = [host], (int(p) if p else 53)
+        try:
+            answers = DnsTransport(nameservers=ns, port=port).query(
+                reverse_name_for_ip(ip), "PTR"
+            )
+        except Exception:
+            return []
+        return [str(a).rstrip(".") for a in answers]
+
+    def _http_fetch(self, uri: str):
+        from ruuid.resolve import fetch_url_body
+        try:
+            return fetch_url_body(
+                uri, nameserver=self._nameserver, timeout=self._timeout
+            )
+        except Exception:
+            return None
+
+    def _save(self, name: str, payload) -> None:
+        if isinstance(payload, dict):
+            obj = payload
+        else:
+            if not payload:
+                return
+            obj = {"kind": "uuid-custody",
+                   "certificates": [c.as_dict() for c in payload]}
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            (self._dir / f"{name}.json").write_text(json.dumps(obj, indent=2) + "\n")
+        except OSError:
+            pass
 
 
 def _parse_time(value: str) -> _dt.datetime:
