@@ -195,6 +195,11 @@ def _run(argv: list[str], *, input_bytes: bytes | None = None) -> bytes:
         raise RuntimeError(f"{argv[0]}: command not found") from e
     if proc.returncode != 0:
         err = proc.stderr.decode(errors="replace").strip()
+        if not err:
+            # acme.sh (and some tools) log diagnostics to stdout, not
+            # stderr; surface its tail so failures are debuggable.
+            out = proc.stdout.decode(errors="replace").strip()
+            err = "\n".join(out.splitlines()[-20:])
         raise RuntimeError(f"{argv[0]} failed: {err or 'unknown error'}")
     return proc.stdout
 
