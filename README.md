@@ -446,6 +446,32 @@ document's key, and the cascade falls through. Over time the three
 intake cases converge: self-issued and cooperating issuers are already local,
 and the long tail of novel issuers is fetched once and cached.
 
+#### Making bundles trustless: SCT verification (`sct`)
+
+A published or fetched bundle raises a question: if you no longer ask crt.sh,
+what stops a malicious issuer from putting **fabricated** certificates in its
+bundle? The answer is the **embedded SCTs** every Let's Encrypt certificate
+carries — a CT log's unforgeable, signed proof that *this exact certificate*
+was logged (and therefore issued by a real CA after real validation). Checking
+them needs only the logs' public keys — bundled in `ct_logs.json`, no network —
+so it's the step that lets you trust a bundle from an untrusted source:
+
+```
+$ pip install 'ruuid[sct]'                 # SCT verification needs `cryptography`
+$ ruuid sct fullchain.pem
+  [verified] Sectigo 'Elephant2026h2'       @ 2026-07-08T00:16:57+00:00
+  [verified] IPng Networks 'Halloumi2026h2a' @ 2026-07-08T00:16:56+00:00
+verified 2/2 SCT(s) from 2 independent operator(s)
+verdict: OK (require >= 2 from trusted logs)
+```
+
+Trust doesn't vanish — it **moves to the CT log operators**, where CT intends
+it: requiring valid SCTs from two or more independent logs means forgery needs
+multiple operators to collude, not just a lying issuer. A fabricated cert that
+never went through CT simply carries no verifiable SCTs. (This is Phase 1 — the
+verification primitive and `ruuid sct` command; wiring it into `verify` /
+`--fetch-bundles` as a gate on ingested certs is the next phase.)
+
 #### Commandeering-safe resolution: `resolve --verify`
 
 Plain `resolve` follows the PTR to whatever document the current IP holder

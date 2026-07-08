@@ -111,6 +111,13 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .IR FILE ]
 .RB [ --emit-custody
 .IR FILE ]
+.br
+.B ruuid sct
+.I CERT
+.RB [ --min
+.IR N ]
+.RB [ --log-list
+.IR FILE ]
 .SH DESCRIPTION
 .B ruuid
 is the reference CLI for Resolvable UUIDs, a UUIDv8 variant whose 64-bit
@@ -703,6 +710,30 @@ later RUUID for that IP (any covered day, any sequence) is green-lit locally
 with no network.
 .B \-\-no-cache
 disables it.
+.SH SCT
+.B ruuid sct \fICERT\fR [options]
+.PP
+.B (Experimental.)
+Verify the Signed Certificate Timestamps embedded in
+.I CERT
+(a full-chain PEM: leaf then issuer) against a bundled list of trusted CT-log
+public keys (RFC 6962). A valid SCT is a log's unforgeable, signed proof that
+this exact certificate was logged \(em and therefore issued by a real CA after
+real validation \(em so it establishes the certificate is genuine WITHOUT trusting
+whoever supplied it. This is what lets a resolver accept a custody bundle from an
+untrusted issuer: trust moves from the issuer to the CT log operators (requiring
+several independent logs). Fully offline. Needs the
+.B cryptography
+package
+.RB ( "pip install 'ruuid[sct]'" ).
+Exit status 0 if enough SCTs verify, 1 if not, 2 if the package is missing.
+.TP
+.B \-\-min \fIN\fR
+Minimum SCTs that must verify against trusted logs (default 2).
+.TP
+.B \-\-log-list \fIFILE\fR
+CT log list JSON in the bundled format (default: the bundled
+.IR ct_logs.json ).
 .SH FILES
 .TP
 .I /etc/ruuid/anchor-cert.pem

@@ -584,6 +584,52 @@ def cmd_rotate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sct(args: argparse.Namespace) -> int:
+    """Verify a certificate's embedded CT SCTs against the trusted log list."""
+    import datetime as _dt
+
+    from ruuid.sct import SctUnavailable, load_log_list, verify_cert_scts
+
+    try:
+        pem = Path(args.cert).read_bytes()
+    except OSError as e:
+        print(f"ruuid sct: cannot read {args.cert}: {e}", file=sys.stderr)
+        return 1
+    log_list = None
+    if args.log_list:
+        try:
+            log_list = json.loads(Path(args.log_list).read_text())["logs"]
+        except (OSError, ValueError, KeyError) as e:
+            print(f"ruuid sct: bad log list: {e}", file=sys.stderr)
+            return 1
+    try:
+        result = verify_cert_scts(pem, log_list=log_list)
+    except SctUnavailable as e:
+        print(f"ruuid sct: {e}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        print(f"ruuid sct: {e}", file=sys.stderr)
+        return 1
+
+    for s in result.scts:
+        if s.verified:
+            mark = "verified"
+        elif s.log_description is None:
+            mark = "UNTRUSTED LOG"
+        else:
+            mark = "BAD SIGNATURE"
+        ts = _dt.datetime.fromtimestamp(
+            s.timestamp_ms / 1000, _dt.timezone.utc
+        ).isoformat()
+        print(f"  [{mark}] {s.log_description or s.log_id_b64}  @ {ts}")
+    print(f"verified {result.verified_count}/{len(result.scts)} SCT(s) from "
+          f"{len(result.verified_operators)} independent operator(s)")
+    ok = result.ok(args.min)
+    print(f"verdict: {'OK' if ok else 'INSUFFICIENT'} "
+          f"(require >= {args.min} from trusted logs)")
+    return 0 if ok else 1
+
+
 def cmd_coverage(args: argparse.Namespace) -> int:
     """List / check which issue-days are already covered for an anchor."""
     import datetime as _dt
@@ -1222,6 +1268,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="path to the acme.sh script",
     )
     ro.set_defaults(func=cmd_rotate)
+
+    sc = sub.add_parser(
+        "sct",
+        help="(experimental) verify a certificate's embedded CT SCTs",
+        description=(
+            "Verify the Signed Certificate Timestamps embedded in a certificate "
+            "against a bundled list of trusted CT-log public keys (RFC 6962). A "
+            "valid SCT is a log's unforgeable, signed proof that this exact "
+            "certificate was logged — so it establishes the cert is genuine "
+            "(went through a real CA + CT) WITHOUT trusting whoever supplied it. "
+            "Fully offline. Needs a full-chain PEM (leaf + issuer) and the "
+            "'cryptography' package (pip install 'ruuid[sct]')."
+        ),
+    )
+    sc.add_argument("cert", help="certificate PEM (full chain: leaf then issuer)")
+    sc.add_argument(
+        "--min", type=int, default=2, metavar="N",
+        help="minimum SCTs that must verify against trusted logs (default: 2)",
+    )
+    sc.add_argument(
+        "--log-list", default=None, metavar="FILE",
+        help="CT log list JSON in the bundled format (default: bundled ct_logs.json)",
+    )
+    sc.set_defaults(func=cmd_sct)
     return p
 
 

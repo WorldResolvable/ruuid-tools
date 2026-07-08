@@ -13,8 +13,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# SCT verification (ruuid.sct / `ruuid sct`, and --verify-scts) needs the
+# `cryptography` package; the rest of the tool runs on openssl + stdlib.
+sct = [
+    "cryptography>=42",
+]
 test = [
     "pytest>=7",
+    "cryptography>=42",
 ]
 
 [project.scripts]
