@@ -316,6 +316,17 @@ def _earliest_successor(key: str, certs: list[CtCert]) -> str | None:
     return commits[0][1]
 
 
+def _activated(key: str, certs: list[CtCert]) -> bool:
+    """True if `key` has acted in CT — i.e. some certificate is under it.
+
+    A genesis key holds its IP cert; a rotated-in key publishes its own
+    successor commitment (via `rotate`). A key that is only the *target* of a
+    commitment (a pinned, still-cold successor) has no cert of its own and is
+    not yet the current key.
+    """
+    return any(c.spki_sha256 == key for c in certs)
+
+
 def _walk_chain(
     start: str, target: str | None, certs: list[CtCert]
 ) -> list[str] | None:
@@ -556,7 +567,9 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
         # from a genesis key to it (earliest-commitment-wins at each hop).
         for gk in genesis_keys:
             ch = _walk_chain(gk, doc_key, certs)
-            if ch is not None:
+            if ch is None:
+                continue
+            if _activated(doc_key, certs):
                 return make(
                     True,
                     f"document commits {doc_key} — generation {len(ch) - 1} in "
@@ -564,6 +577,16 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
                     f"({' -> '.join(ch)})",
                     genesis_by_key[gk], chain=tuple(ch),
                 )
+            # Endorsed by the chain but still cold — the issuer must `rotate`
+            # (which activates it in CT) before committing a document to it.
+            return make(
+                False,
+                f"document commits {doc_key}, the pre-committed successor at "
+                f"generation {len(ch) - 1} of genesis {gk}, but it has not been "
+                f"activated in CT — run `rotate` to activate it before "
+                f"publishing a document that commits it",
+                None, chain=tuple(ch),
+            )
         return make(
             False,
             f"document commits {doc_key}, which is neither the genesis key for "
@@ -578,7 +601,11 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
     if len(genesis_keys) == 1:
         gk = genesis_keys[0]
         g = genesis_by_key[gk]
-        ch = _walk_chain(gk, None, certs) or [gk]  # follow to the tip
+        ch = _walk_chain(gk, None, certs) or [gk]  # follow the commitments
+        # Drop a trailing pinned-but-not-yet-activated successor: the current
+        # key is the last one that has actually acted in CT.
+        while len(ch) > 1 and not _activated(ch[-1], certs):
+            ch.pop()
         tip = ch[-1]
         if tip == gk:
             reason = (f"{ip} on {anchor_date.isoformat()} is controlled by key "

@@ -210,12 +210,15 @@ def test_document_without_key_raises():
 
 from ruuid.seal import commitment_label   # noqa: E402
 
-K2_JWK = {"kty": "EC", "crv": "P-256",
-          "x": _b64u(b"\x33" * 32), "y": _b64u(b"\x44" * 32)}
-K2_SPKI = spki_sha256_from_jwk(K2_JWK)
-K3_JWK = {"kty": "EC", "crv": "P-256",
-          "x": _b64u(b"\x55" * 32), "y": _b64u(b"\x66" * 32)}
-K3_SPKI = spki_sha256_from_jwk(K3_JWK)
+def _key(seed):
+    jwk = {"kty": "EC", "crv": "P-256",
+           "x": _b64u(bytes([seed]) * 32), "y": _b64u(bytes([seed + 1]) * 32)}
+    return jwk, spki_sha256_from_jwk(jwk)
+
+
+K2_JWK, K2_SPKI = _key(0x33)
+K3_JWK, K3_SPKI = _key(0x55)
+K4_JWK, K4_SPKI = _key(0x77)
 
 
 def _commit_cert(under, nxt, *, nb, na, serial, cid):
@@ -225,12 +228,20 @@ def _commit_cert(under, nxt, *, nb, na, serial, cid):
                  nb=nb, na=na, serial=serial, cid=cid, spki=under)
 
 
+# A realistic gen1 chain: genesis K1 (IP cert) commits K2; K2 has rotated in
+# and so has published its own commitment to a cold K3.
+K1_TO_K2 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
+                        na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
+K2_TO_K3 = _commit_cert(K2_SPKI, K3_SPKI, nb="2026-07-09T00:00:00+00:00",
+                        na="2026-10-07T00:00:00+00:00", serial="c2", cid=202)
+K3_TO_K4 = _commit_cert(K3_SPKI, K4_SPKI, nb="2026-07-10T00:00:00+00:00",
+                        na="2026-10-08T00:00:00+00:00", serial="c3", cid=203)
+
+
 def test_verify_walks_chain_to_rotated_key():
     ru = RUUID.from_str(RU_STR)
-    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
-                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
     result, _ = verify_ruuid(ru, _document(jwk=K2_JWK),
-                             ct_source=FakeCt([GENESIS_CERT, c1]))
+                             ct_source=FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
     assert result.verified
     assert result.chain == (SPKI, K2_SPKI)       # genesis -> rotated key
     assert result.document_key == K2_SPKI
@@ -238,23 +249,27 @@ def test_verify_walks_chain_to_rotated_key():
 
 def test_verify_walks_two_hop_chain():
     ru = RUUID.from_str(RU_STR)
-    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
-                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
-    c2 = _commit_cert(K2_SPKI, K3_SPKI, nb="2026-07-09T00:00:00+00:00",
-                      na="2026-10-07T00:00:00+00:00", serial="c2", cid=202)
-    result, _ = verify_ruuid(ru, _document(jwk=K3_JWK),
-                             ct_source=FakeCt([GENESIS_CERT, c1, c2]))
+    result, _ = verify_ruuid(
+        ru, _document(jwk=K3_JWK),
+        ct_source=FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3, K3_TO_K4]))
     assert result.verified
     assert result.chain == (SPKI, K2_SPKI, K3_SPKI)
 
 
+def test_verify_rejects_pinned_but_unactivated_key():
+    # K2 is committed by K1 but has not itself acted in CT (still cold).
+    ru = RUUID.from_str(RU_STR)
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK),
+                             ct_source=FakeCt([GENESIS_CERT, K1_TO_K2]))
+    assert not result.verified
+    assert "not been activated" in result.reason
+
+
 def test_verify_rejects_unendorsed_key():
     ru = RUUID.from_str(RU_STR)
-    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
-                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
     # Document commits an impostor key that no one in the chain committed to.
     result, _ = verify_ruuid(ru, _document(jwk=IMPOSTOR_JWK),
-                             ct_source=FakeCt([GENESIS_CERT, c1]))
+                             ct_source=FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
     assert not result.verified
     assert "successor" in result.reason
 
@@ -263,11 +278,9 @@ def test_verify_chain_fork_earliest_commitment_wins():
     # Two commitments under the genesis key: the genuine one (early) pins K2;
     # a later fork (a thief) pins the impostor. Earliest-SCT-wins picks K2.
     ru = RUUID.from_str(RU_STR)
-    genuine = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
-                           na="2026-10-06T00:00:00+00:00", serial="ok", cid=201)
     fork = _commit_cert(SPKI, IMPOSTOR_SPKI, nb="2026-07-20T00:00:00+00:00",
-                        na="2026-10-18T00:00:00+00:00", serial="fork", cid=202)
-    ct = FakeCt([GENESIS_CERT, genuine, fork])
+                        na="2026-10-18T00:00:00+00:00", serial="fork", cid=299)
+    ct = FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3, fork])
     ok, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=ct)
     assert ok.verified and ok.chain == (SPKI, K2_SPKI)
     bad, _ = verify_ruuid(ru, _document(jwk=IMPOSTOR_JWK), ct_source=ct)
@@ -276,23 +289,26 @@ def test_verify_chain_fork_earliest_commitment_wins():
 
 def test_custody_bundle_follows_chain_forward():
     ru = RUUID.from_str(RU_STR)
-    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
-                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
-    c2 = _commit_cert(K2_SPKI, K3_SPKI, nb="2026-07-09T00:00:00+00:00",
-                      na="2026-10-07T00:00:00+00:00", serial="c2", cid=202)
-    bundle = gather_custody(ru, FakeCt([GENESIS_CERT, c1, c2]))
+    bundle = gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
     serials = {c["serial"] for c in bundle["chain"][0]["certificates"]}
     assert {"genesis", "c1", "c2"} <= serials     # whole chain gathered from CT
 
 
-def test_verify_no_document_reports_chain_tip():
+def test_verify_no_document_reports_activated_tip():
     ru = RUUID.from_str(RU_STR)
-    c1 = _commit_cert(SPKI, K2_SPKI, nb="2026-07-08T00:00:00+00:00",
-                      na="2026-10-06T00:00:00+00:00", serial="c1", cid=201)
-    result, _ = verify_ruuid(ru, None, ct_source=FakeCt([GENESIS_CERT, c1]))
+    result, _ = verify_ruuid(
+        ru, None, ct_source=FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
     assert result.verified
-    assert result.chain == (SPKI, K2_SPKI)        # walked to the current tip
+    assert result.chain == (SPKI, K2_SPKI)        # tip is the activated K2, not K3
     assert K2_SPKI in result.reason
+
+
+def test_verify_no_document_only_pinned_reports_genesis():
+    # Genesis committed K2 but has not rotated: current key is still genesis.
+    ru = RUUID.from_str(RU_STR)
+    result, _ = verify_ruuid(ru, None, ct_source=FakeCt([GENESIS_CERT, K1_TO_K2]))
+    assert result.verified
+    assert result.chain == (SPKI,)                # K2 is only pinned, trimmed
 
 
 # --- per-IP cache / local green-lighting ---------------------------------
