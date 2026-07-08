@@ -251,6 +251,20 @@ only the IP; domain control then rests on the local PTR check alone),
 `--nameserver HOST[:PORT]` (resolver for the PTR check),
 `--key-bits N`, and `--out DIR`.
 
+**Pre-rotation (`--pre-rotate`).** For an identity that must survive
+*compromise* of its key, `seal --pre-rotate` also generates a successor key
+**`K2` cold** (kept offline) and publishes a **commitment** to it in CT: a
+certificate *under the genesis key `K1`* whose dNSName encodes `spki(K2)`
+(`k<base32>.rotate.<domain>`). Because that cert is signed by `K1` and lives
+in append-only, backdate-proof CT, it **pins the successor before `K1` is
+ever exposed** — so a later thief of `K1` cannot choose a different
+successor (theirs won't match the committed hash, and the genuine
+commitment, published at genesis, always wins on earliest-SCT ordering).
+A future `ruuid rotate` reveals `K2`. This needs a wildcard DNS record
+`*.rotate.<domain>` (override with `--commit-host`) pointing at the host, and
+`next-key.pem` must be **backed up offline and kept cold** — it is your
+pinned successor.
+
 > **Experimental.** This command prototypes the genesis-proof profile from
 > the Verifiable Custody Chains design notes ahead of its `-01` write-up;
 > the UUID-document proof shape in particular is expected to evolve.

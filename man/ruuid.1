@@ -67,6 +67,9 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .RB [ --webroot
 .IR DIR ]
 .RB [ --no-domain-cert ]
+.RB [ --pre-rotate ]
+.RB [ --commit-host
+.IR HOST ]
 .RB [ --nameserver
 .IR HOST [: PORT ]]
 .RB [ --out
@@ -430,6 +433,39 @@ otherwise reverse-proxied).
 .B \-\-no-domain-cert
 Skip the same-key domain cert; certify only the IP (domain control then rests on
 the local PTR check alone).
+.TP
+.B \-\-pre-rotate
+Generate a successor key
+.I K2
+cold (offline) and publish a commitment to it in CT \(em a certificate under the
+genesis key
+.I K1
+whose dNSName encodes
+.RI spki( K2 )
+as
+.IR k<base32>.rotate.<domain> .
+Signed by
+.I K1
+and logged in append-only, backdate-proof CT, it pins the successor before
+.I K1
+is exposed, so a later thief of
+.I K1
+cannot choose a different successor (earliest-SCT ordering makes the genuine
+genesis commitment win). A future
+.B ruuid rotate
+reveals
+.IR K2 .
+Needs a wildcard DNS record
+.RI * . <commit-host>
+pointing at this host;
+.I next-key.pem
+must be backed up offline and kept cold.
+.TP
+.B \-\-commit-host \fIHOST\fR
+Host under which the pre-rotation commitment dNSName is issued (default
+.IR rotate.<domain> );
+.RI * . <HOST>
+must resolve to this host.
 .TP
 .B \-\-nameserver \fIHOST\fR[:\fIPORT\fR]
 DNS server for the PTR verification (default: system resolver).

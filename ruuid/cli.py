@@ -544,6 +544,8 @@ def cmd_seal(args: argparse.Namespace) -> int:
             challenge=args.challenge,
             webroot=args.webroot,
             domain_cert=args.domain_cert,
+            pre_rotate=args.pre_rotate,
+            commit_host=args.commit_host,
             nameserver=args.nameserver,
             acme_path=args.acme,
         )
@@ -954,6 +956,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-domain-cert", dest="domain_cert", action="store_false",
         help="skip the same-key 90-day dNSName cert; certify only the IP "
              "(domain control then rests on the local PTR check alone)",
+    )
+    s.add_argument(
+        "--pre-rotate", action="store_true",
+        help="(experimental) generate a successor key K2 COLD and publish a "
+             "commitment to it in CT (a cert under the genesis key whose "
+             "dNSName encodes spki(K2)), pinning the successor so a future "
+             "`ruuid rotate` survives compromise of the genesis key. Needs a "
+             "wildcard DNS record *.<commit-host> pointing at this host. Back "
+             "up next-key.pem offline.",
+    )
+    s.add_argument(
+        "--commit-host", default=None, metavar="HOST",
+        help="host under which the pre-rotation commitment dNSName is issued "
+             "(default: rotate.<domain>); *.<commit-host> must resolve here",
     )
     s.add_argument(
         "--nameserver", default=None, metavar="HOST[:PORT]",

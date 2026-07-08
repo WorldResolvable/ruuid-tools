@@ -190,6 +190,7 @@ class SealResult:
     out_dir: Path
     document: dict
     manifest: dict
+    next_key: dict | None = None   # pre-rotation: {spkiSha256, commitmentName, ...}
 
 
 # --- openssl plumbing ---------------------------------------------------
@@ -220,6 +221,28 @@ def _require(tool: str) -> str:
 
 def _b64u(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def commitment_label(spki_digest: bytes) -> str:
+    """DNS label committing to a successor key (its 32-byte SPKI SHA-256).
+
+    `"k"` + lowercase, unpadded base32 of the digest (53 chars — fits a single
+    DNS label). Used as the leftmost label of the pre-rotation commitment
+    certificate's dNSName, so the successor's key id is discoverable in CT.
+    """
+    return "k" + base64.b32encode(spki_digest).decode("ascii").rstrip("=").lower()
+
+
+def spki_from_commitment_label(label: str) -> str | None:
+    """Recover the committed SPKI hex from a `commitment_label`, or None."""
+    if not label.startswith("k"):
+        return None
+    b32 = label[1:].upper()
+    try:
+        raw = base64.b32decode(b32 + "=" * (-len(b32) % 8))
+    except Exception:
+        return None
+    return raw.hex().upper() if len(raw) == 32 else None
 
 
 def _openssl_csr(
@@ -579,6 +602,8 @@ def seal(
     challenge: str = "auto",
     webroot: str | None = None,
     domain_cert: bool = True,
+    pre_rotate: bool = False,
+    commit_host: str | None = None,
     nameserver: str | None = None,
     acme_path: str | None = None,
     acme_runner: AcmeRunner | None = None,
@@ -661,6 +686,57 @@ def seal(
         # The committed key identifier: SHA-256 of the shared public key.
         key_id = ip_info.spki_sha256
 
+        # 3b. Pre-rotation: generate the successor key K2 COLD and publish a
+        # commitment to it in CT — a cert under the genesis key K1 whose
+        # dNSName encodes spki(K2). Because it is signed by K1 and logged in
+        # (append-only) CT, it pins the successor before K1 is ever exposed,
+        # so a later compromise of K1 cannot choose a different successor.
+        next_key_info: dict | None = None
+        next_key_path: Path | None = None
+        commit_csr: Path | None = None
+        commit_cert_path: Path | None = None
+        if pre_rotate:
+            next_key_path = tmpd / "next-key.pem"
+            _run([
+                openssl, "genpkey", "-algorithm", "EC",
+                "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(next_key_path),
+            ])
+            k2_der = _run(
+                [openssl, "pkey", "-in", str(next_key_path), "-pubout",
+                 "-outform", "DER"]
+            )
+            k2_digest = hashlib.sha256(k2_der).digest()
+            k2_spki = k2_digest.hex().upper()
+            host = commit_host or f"rotate.{domain}"
+            commit_name = f"{commitment_label(k2_digest)}.{host}"
+
+            commit_csr = tmpd / "commitment.csr"
+            # CSR under the GENESIS key K1 (proves K1's holder made it).
+            # Empty subject: the commitment name is longer than a 64-char CN,
+            # and it lives in the SAN anyway.
+            _openssl_csr(
+                openssl, key_path, commit_csr, san=f"DNS:{commit_name}", cn=None,
+            )
+            commit_cert_path = tmpd / "commitment-cert.pem"
+            acme_runner(AcmeRequest(
+                mode="signcsr", key_path=key_path, csr_path=commit_csr,
+                cert_out=commit_cert_path, identifier=commit_name, is_ip=False,
+                challenge=chosen_challenge, staging=staging, profile=None,
+                webroot=webroot,
+            ))
+            commit_info = _cert_info(
+                openssl, commit_cert_path, kind="commitment", identifier=commit_name
+            )
+            if commit_info.spki_sha256 != key_id:
+                raise RuntimeError(
+                    "commitment certificate is not under the genesis key"
+                )
+            next_key_info = {
+                "spkiSha256": k2_spki,
+                "commitmentName": commit_name,
+                "commitmentCert": commit_info,
+            }
+
         # 4. Anchor day inside the IP cert window; mint the RUUID.
         anchor_day = _pick_anchor_day(
             ip_info.not_before, ip_info.not_after, day
@@ -700,6 +776,19 @@ def seal(
             shutil.copy(domain_csr, final / "domain.csr")
             shutil.copy(domain_cert_path, final / "domain-cert.pem")
             domain_info = _replace_path(domain_info, final / "domain-cert.pem")
+        if next_key_info is not None and next_key_path and commit_cert_path:
+            nk_dst = final / "next-key.pem"
+            shutil.copy(next_key_path, nk_dst)   # the COLD successor key
+            try:
+                nk_dst.chmod(0o600)
+            except OSError:
+                pass
+            shutil.copy(commit_csr, final / "commitment.csr")
+            shutil.copy(commit_cert_path, final / "commitment-cert.pem")
+            next_key_info["commitmentCert"] = _replace_path(
+                next_key_info["commitmentCert"], final / "commitment-cert.pem"
+            )
+            next_key_info["keyPath"] = str(nk_dst)
 
     manifest = {
         "ruuid": str(ru),
@@ -721,11 +810,25 @@ def seal(
         "domainCertificate": (
             domain_info.as_dict(include_path=True) if domain_info else None
         ),
+        "nextKey": (
+            {
+                "spkiSha256": next_key_info["spkiSha256"],
+                "commitmentName": next_key_info["commitmentName"],
+                "keyPath": next_key_info["keyPath"],
+                "commitmentCertificate":
+                    next_key_info["commitmentCert"].as_dict(include_path=True),
+            }
+            if next_key_info else None
+        ),
         "artifacts": {
             "key": str(final / "key.pem"),
             "ipCert": str(final / "ip-cert.pem"),
             "domainCsr": str(final / "domain.csr") if domain_info else None,
             "domainCert": str(final / "domain-cert.pem") if domain_info else None,
+            "nextKey": str(final / "next-key.pem") if next_key_info else None,
+            "commitmentCert": (
+                str(final / "commitment-cert.pem") if next_key_info else None
+            ),
             "document": str(final / "uuid-document.json"),
         },
     }
@@ -740,6 +843,7 @@ def seal(
         spki_sha256=key_id, ptr_name=ptr_name,
         ptr_targets=ptr_targets, ip_cert=ip_info, domain_cert=domain_info,
         out_dir=final, document=document, manifest=manifest,
+        next_key=manifest["nextKey"],
     )
 
 
@@ -791,6 +895,14 @@ def render_report(result: SealResult) -> str:
         )
     else:
         lines.append("domain cert:       (skipped)")
+    if result.next_key:
+        nk = result.next_key
+        lines.append(f"pre-rotation:      next key (cold) SPKI {nk['spkiSha256']}")
+        lines.append(f"                   committed as {nk['commitmentName']}")
+        lines.append(
+            "                   *** BACK UP next-key.pem OFFLINE and keep it "
+            "COLD — it is your pinned successor ***"
+        )
     lines.append(f"artifacts:         {result.out_dir}")
     return "\n".join(lines)
 

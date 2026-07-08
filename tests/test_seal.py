@@ -324,6 +324,51 @@ def test_cli_seal_happy(ptr_ns, tmp_path, monkeypatch, capsys):
     assert (out / "uuid-document.json").exists()
 
 
+# --- pre-rotation (genesis commitment to a cold successor) ---------------
+
+def test_seal_pre_rotate_commits_cold_successor(ptr_ns, tmp_path):
+    from ruuid.seal import spki_from_commitment_label
+    acme = FakeAcme()
+    result = seal(
+        IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
+        acme_runner=acme, challenge="http-01", pre_rotate=True,
+    )
+    nk = result.next_key
+    assert nk is not None
+    assert nk["spkiSha256"] and nk["spkiSha256"] != result.spki_sha256  # K2 != K1
+    # commitment name is a subdomain of rotate.<domain>, its label decodes to K2
+    assert nk["commitmentName"].endswith(f".rotate.{DOMAIN}")
+    label = nk["commitmentName"].split(".")[0]
+    assert spki_from_commitment_label(label) == nk["spkiSha256"]
+
+    out = tmp_path / "s"
+    assert (out / "next-key.pem").exists()
+    assert (out / "next-key.pem").stat().st_mode & 0o077 == 0   # cold key owner-only
+    assert (out / "commitment-cert.pem").exists()
+
+    # An extra acme request (the commitment cert) beyond IP + domain,
+    # signed under the genesis key (its CSR uses the genesis key).
+    assert len(acme.requests) == 3
+    commit_req = next(r for r in acme.requests if not r.is_ip
+                      and "rotate" in r.identifier)
+    assert commit_req.mode == "signcsr"
+
+    manifest = json.loads((out / "seal.json").read_text())
+    assert manifest["nextKey"]["spkiSha256"] == nk["spkiSha256"]
+    # the commitment cert is under the genesis key (same SPKI)
+    assert manifest["nextKey"]["commitmentCertificate"]["spkiSha256"] \
+        == result.spki_sha256
+
+
+def test_seal_without_pre_rotate_has_no_next_key(ptr_ns, tmp_path):
+    result = seal(
+        IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
+        acme_runner=FakeAcme(), challenge="http-01",
+    )
+    assert result.next_key is None
+    assert not (tmp_path / "s" / "next-key.pem").exists()
+
+
 # --- webroot mode --------------------------------------------------------
 
 def test_seal_webroot_threads_through(ptr_ns, tmp_path):
