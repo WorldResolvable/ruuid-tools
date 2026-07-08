@@ -697,11 +697,10 @@ def cmd_custody(args: argparse.Namespace) -> int:
     single self-contained uuid-custody.json (no CT query, no RUUID needed) for
     hosting at https://<domain>/.well-known/uuid-custody.json.
     """
-    from ruuid.verify import (
-        CrtShSource, build_published_custody, default_seals_dir, gather_custody,
-    )
+    from ruuid.verify import CrtShSource, build_published_custody, gather_custody
 
     if args.publish:
+        from ruuid.seal import default_seals_dir
         seals = args.seals or str(default_seals_dir())
         custody = build_published_custody(seals)
     else:
