@@ -80,6 +80,21 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .RB [ --seals
 .IR DIR ]
 .RB [ --include-staging ]
+.br
+.B ruuid custody
+.I RUUID
+.RB [ --document
+.IR FILE ]
+.RB [ --out
+.IR FILE ]
+.br
+.B ruuid verify
+.I RUUID
+.I DOCUMENT
+.RB [ --custody
+.IR FILE ]
+.RB [ --emit-custody
+.IR FILE ]
 .SH DESCRIPTION
 .B ruuid
 is the reference CLI for Resolvable UUIDs, a UUIDv8 variant whose 64-bit
@@ -459,6 +474,66 @@ Directory of seal records to read (default
 .B \-\-include-staging
 Also count staging seals. By default only production seals count, since a staging
 certificate lands only in staging CT and proves nothing to third parties.
+.SH CUSTODY
+.B ruuid custody \fIRUUID\fR [options]
+.PP
+.B (Experimental.)
+Query Certificate Transparency for every certificate carrying the RUUID's
+committed key and emit a
+.I custody.json
+evidence bundle \(em the key's full anchoring timeline, shaped
+.RI ( chain :[ generation ,\ ...]),
+so key rotation extends it without a schema break. Runnable anywhere with
+crt.sh access. The document supplies the key.
+.TP
+.B \-\-document \fIFILE\fR
+Path to the RUUID's
+.IR uuid-document.json .
+If omitted, the RUUID is resolved and its document fetched.
+.TP
+.B \-\-out \fIFILE\fR
+Write
+.I custody.json
+to
+.I FILE
+(default: stdout).
+.SH VERIFY
+.B ruuid verify \fIRUUID\fR \fIDOCUMENT\fR [options]
+.PP
+.B (Experimental.)
+Confirm in Certificate Transparency that the key committed by the RUUID's
+.I DOCUMENT
+.RI ( uuid-document.json )
+controlled the RUUID's network anchor on the day the RUUID encodes: compute the
+key's SPKI hash from the document, query
+.IR crt.sh?spkisha256= ,
+and look for a certificate carrying the RUUID's IP whose validity window covers
+the RUUID's day. Exits non-zero when not verified. Prints the verdict and the
+key's anchoring timeline.
+.PP
+This is the
+.B single-key
+verifier: it assumes one key from genesis to now \(em the key may have been
+re-anchored to other IPs/domains (they appear in the timeline), but key rotation
+(a custody chain of endorsed generations) is a later layer.
+.TP
+.B \-\-custody \fIFILE\fR
+Verify against a pre-built
+.I custody.json
+bundle (from
+.BR "ruuid custody" ),
+making the check offline and deterministic. Without it, the bundle is built live
+from CT.
+.TP
+.B \-\-emit-custody \fIFILE\fR
+Write the custody bundle used for verification to
+.IR FILE .
+.PP
+Known limitation: the key is taken from the document's claim (crt.sh cannot be
+queried by IP, only by the key's SPKI hash), so
+.B verify
+confirms that the document's key controlled the anchor on the day, and records
+which certificates it used so the judgement is auditable.
 .SH FILES
 .TP
 .I /etc/ruuid/anchor-cert.pem
