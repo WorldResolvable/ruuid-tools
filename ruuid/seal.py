@@ -419,6 +419,11 @@ def _run_acme_sh(req: AcmeRequest, *, acme_path: str) -> None:
             "--fullchain-file", str(req.cert_out),
             "--server", server,
             "--force",
+            # Force a genuinely fresh domain key each issue: otherwise, with a
+            # cached cert, acme.sh may write a new key to --key-file while
+            # --fullchain-file still holds the old cert, leaving the key and
+            # cert (and thus our genesis identity) inconsistent.
+            "--always-force-new-domain-key",
         ]
     else:
         argv = [

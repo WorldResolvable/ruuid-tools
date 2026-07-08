@@ -420,6 +420,7 @@ def test_run_acme_sh_argv_issue_webroot(tmp_path, monkeypatch):
     seal_mod._run_acme_sh(req, acme_path="acme.sh")
     argv = captured["argv"]
     assert "--issue" in argv and "-d" in argv and IP in argv
+    assert "--always-force-new-domain-key" in argv
     assert "--key-file" in argv and "--fullchain-file" in argv
     assert "-w" in argv and "/var/www/acme" in argv
     assert "--standalone" not in argv and "--alpn" not in argv
