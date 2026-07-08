@@ -361,6 +361,21 @@ key CT names) rather than treating it as an impostor. It is a routing hint
 only, never a positive verdict: an in-range claim still has to pass the CT
 check, and a dishonest party gains nothing by lying about the range.
 
+#### The per-IP cache: green-light a batch locally
+
+Genesis verification is a function of `(IP, day)` — the sequence is
+irrelevant — and CT is append-only and backdate-proof, so "key K held IP on
+day D" is an **immutable historical fact**. `verify` and `resolve --verify`
+therefore keep a **permanent per-IP cache** (`~/.ruuid/ct-cache/`, override
+with `--cache-dir`, disable with `--no-cache`): the first RUUID for an IP
+does the CT fetch, and every subsequent RUUID for that IP — any day the
+cached certificates cover (a single short-lived cert spans ~7 days), any
+sequence — is green-lit **locally, with no network**. Cache entries never
+expire; a day no cached cert covers (e.g. a newly sealed one) simply falls
+through to CT and merges back in. This rewards issuers who seal a day and
+mint a batch against it rather than churning days: fewer distinct `(IP, day)`
+pairs means near-100% resolver cache hits.
+
 ### Wire-format probes
 
 If you're writing your own RUUID generator or resolver in another

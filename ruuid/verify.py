@@ -48,6 +48,7 @@ import json
 import time
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ruuid.core import RUUID
@@ -120,6 +121,18 @@ class CtCert:
             "ipSans": list(self.ip_sans),
             "dnsSans": list(self.dns_sans),
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CtCert":
+        return cls(
+            crtsh_id=d.get("crtshId", 0),
+            serial=d.get("serial", ""),
+            spki_sha256=d.get("spkiSha256", ""),
+            not_before=_dt.datetime.fromisoformat(d["notBefore"]),
+            not_after=_dt.datetime.fromisoformat(d["notAfter"]),
+            ip_sans=tuple(d.get("ipSans") or []),
+            dns_sans=tuple(d.get("dnsSans") or []),
+        )
 
 
 @runtime_checkable
@@ -266,16 +279,11 @@ def _cert_is_genesis(cert: CtCert, ru: RUUID, day_count: int) -> bool:
     return start <= day_count <= end
 
 
-def gather_custody(ru: RUUID, ct_source: CtSource) -> dict:
-    """Build the custody bundle for `ru` from CT — genesis by IP, plus timeline.
-
-    Enumerates certs carrying the RUUID's IP (the genesis root), then follows
-    each genesis key's SPHI for its full anchoring timeline (IP moves, domain
-    certs). No document required.
-    """
+def _fetch_certs(ru: RUUID, ct_source: CtSource) -> list[CtCert]:
+    """Certs carrying the RUUID's IP (the genesis root) plus each genesis key's
+    forward timeline (IP moves, domain certs). Deduped by serial."""
     ip = anchor_ip(ru)
     day_count = _day_count(ru)
-
     ip_certs = ct_source.certs_for_ip(ip)
     genesis_keys = sorted(
         {c.spki_sha256 for c in ip_certs if _cert_is_genesis(c, ru, day_count)}
@@ -284,12 +292,22 @@ def gather_custody(ru: RUUID, ct_source: CtSource) -> dict:
     for spki in genesis_keys:
         for c in ct_source.certs_for_spki(spki):
             by_serial.setdefault(c.serial, c)
-    certs = sorted(by_serial.values(), key=lambda c: c.not_before)
+    return sorted(by_serial.values(), key=lambda c: c.not_before)
 
+
+def _merge_certs(a: list[CtCert], b: list[CtCert]) -> list[CtCert]:
+    by_serial = {c.serial: c for c in a}
+    for c in b:
+        by_serial.setdefault(c.serial, c)
+    return sorted(by_serial.values(), key=lambda c: c.not_before)
+
+
+def _custody_bundle(ru: RUUID, certs: list[CtCert]) -> dict:
+    day_count = _day_count(ru)
     return {
         "ruuid": str(ru),
         "network": str(ru.ip_network),
-        "anchorIp": ip,
+        "anchorIp": anchor_ip(ru),
         "dayCount": day_count,
         "anchorDate": _day_to_date(day_count).isoformat(),
         "source": "crt.sh",
@@ -302,6 +320,62 @@ def gather_custody(ru: RUUID, ct_source: CtSource) -> dict:
             }
         ],
     }
+
+
+def gather_custody(ru: RUUID, ct_source: CtSource) -> dict:
+    """Build the custody bundle for `ru` from CT — genesis by IP, plus timeline.
+
+    Enumerates certs carrying the RUUID's IP (the genesis root), then follows
+    each genesis key's SPKI for its full anchoring timeline (IP moves, domain
+    certs). No document required.
+    """
+    return _custody_bundle(ru, _fetch_certs(ru, ct_source))
+
+
+class IpCertCache:
+    """A permanent on-disk cache of the CT certificates for an IP.
+
+    Genesis verification is a function of `(IP, day)`, and CT is append-only
+    and backdate-proof, so a cached `(IP -> certs)` entry is an immutable
+    historical fact — it never needs invalidation. One CT fetch per IP then
+    green-lights every RUUID for that IP (any day the certs cover, any
+    sequence) with a purely local check. Cache misses (an IP not seen, or a
+    day no cached cert covers — possibly a newly sealed day) fall through to
+    CT and merge the fresh certs back in.
+    """
+
+    def __init__(self, cache_dir: Path | str | None = None) -> None:
+        self.dir = (
+            Path(cache_dir) if cache_dir is not None
+            else Path.home() / ".ruuid" / "ct-cache"
+        )
+
+    def _path(self, ip: str) -> Path:
+        safe = ip.replace(":", "_").replace("/", "_")
+        return self.dir / f"{safe}.json"
+
+    def load(self, ip: str) -> list[CtCert] | None:
+        path = self._path(ip)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            return [CtCert.from_dict(c) for c in data.get("certificates", [])]
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def save(self, ip: str, certs: list[CtCert]) -> None:
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self._path(ip).write_text(
+                json.dumps(
+                    {"ip": ip, "certificates": [c.as_dict() for c in certs]},
+                    indent=2,
+                )
+                + "\n"
+            )
+        except OSError:
+            pass
 
 
 # --- verification -------------------------------------------------------
@@ -477,12 +551,31 @@ def verify_ruuid(
     *,
     custody: dict | None = None,
     ct_source: CtSource | None = None,
+    cache: "IpCertCache | None" = None,
 ) -> tuple[VerifyResult, dict]:
-    """Verify, building the custody bundle from CT when one isn't supplied."""
-    if custody is None:
+    """Verify, building the custody bundle when one isn't supplied.
+
+    With a `cache`, an IP whose cached certs already establish this RUUID's
+    genesis is verified locally (no CT); otherwise CT is queried and the
+    fresh certs merged back into the cache.
+    """
+    if custody is not None:
+        return verify(ru, document, custody), custody
+
+    ip = anchor_ip(ru)
+    day_count = _day_count(ru)
+    cached = cache.load(ip) if cache is not None else None
+    if cached is not None and any(
+        _cert_is_genesis(c, ru, day_count) for c in cached
+    ):
+        certs = cached                      # local green-light, no CT
+    else:
         if ct_source is None:
             ct_source = CrtShSource()
-        custody = gather_custody(ru, ct_source)
+        certs = _merge_certs(cached or [], _fetch_certs(ru, ct_source))
+        if cache is not None:
+            cache.save(ip, certs)
+    custody = _custody_bundle(ru, certs)
     return verify(ru, document, custody), custody
 
 

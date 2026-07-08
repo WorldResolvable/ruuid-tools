@@ -14,8 +14,10 @@ import pytest
 
 from ruuid.core import RUUID
 from ruuid.cli import main
+from ruuid.generate import new_ruuid
 from ruuid.verify import (
     CtCert,
+    IpCertCache,
     anchor_ip,
     document_disclaims,
     gather_custody,
@@ -202,6 +204,59 @@ def test_document_without_key_raises():
     custody = gather_custody(ru, FakeCt([GENESIS_CERT]))
     with pytest.raises(ValueError, match="verificationMethod"):
         verify(ru, {"id": "did:uuid:x"}, custody)
+
+
+# --- per-IP cache / local green-lighting ---------------------------------
+
+class CountingCt(FakeCt):
+    def __init__(self, certs):
+        super().__init__(certs)
+        self.ip_calls = 0
+
+    def certs_for_ip(self, ip):
+        self.ip_calls += 1
+        return super().certs_for_ip(ip)
+
+
+def test_ctcert_dict_roundtrip():
+    assert CtCert.from_dict(GENESIS_CERT.as_dict()) == GENESIS_CERT
+
+
+def test_cache_green_lights_further_ruuids_same_ip(tmp_path):
+    cache = IpCertCache(tmp_path)
+    ct = CountingCt([GENESIS_CERT])
+
+    # 1st RUUID for the IP: cache miss -> one CT fetch, cached.
+    ru1 = RUUID.from_str(RU_STR)
+    r1, _ = verify_ruuid(ru1, _document(), ct_source=ct, cache=cache)
+    assert r1.verified and ct.ip_calls == 1
+
+    # 2nd RUUID: same IP + same day, fresh random sequence, its own document
+    # committing the genesis key -> cache HIT, NO further CT fetch.
+    import datetime as dt
+    ru2 = new_ruuid(IP, day=dt.datetime(2026, 7, 8, tzinfo=dt.timezone.utc))
+    assert str(ru2) != RU_STR and anchor_ip(ru2) == IP
+    r2, _ = verify_ruuid(ru2, _document(ruuid=str(ru2)), ct_source=ct, cache=cache)
+    assert r2.verified
+    assert ct.ip_calls == 1                       # green-lit locally
+
+    # A fresh cache instance (new process) reads the persisted certs.
+    r3, _ = verify_ruuid(ru1, _document(), ct_source=ct, cache=IpCertCache(tmp_path))
+    assert r3.verified and ct.ip_calls == 1
+
+
+def test_cache_miss_for_uncovered_day_refetches(tmp_path):
+    cache = IpCertCache(tmp_path)
+    ct = CountingCt([GENESIS_CERT])
+    ru1 = RUUID.from_str(RU_STR)
+    verify_ruuid(ru1, _document(), ct_source=ct, cache=cache)   # caches
+    assert ct.ip_calls == 1
+    # An RUUID for the same IP but a day the cached cert does NOT cover
+    # (e.g. a later, not-yet-cached day) must fall through to CT.
+    import datetime as dt
+    ru_late = new_ruuid(IP, day=dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc))
+    verify_ruuid(ru_late, _document(ruuid=str(ru_late)), ct_source=ct, cache=cache)
+    assert ct.ip_calls == 2                        # re-fetched
 
 
 # --- minting day-range (resolver triage) ---------------------------------

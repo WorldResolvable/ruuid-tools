@@ -120,9 +120,7 @@ def _cmd_resolve_verify(args: argparse.Namespace) -> int:
     impostor.
     """
     from ruuid.core import RUUID
-    from ruuid.verify import (
-        CrtShSource, document_disclaims, render, verify_ruuid,
-    )
+    from ruuid.verify import document_disclaims, render, verify_ruuid
 
     try:
         ru = RUUID.from_str(args.uuid)
@@ -156,7 +154,7 @@ def _cmd_resolve_verify(args: argparse.Namespace) -> int:
     day_count = ru.identifier >> 28
     disclaimed = document_disclaims(document, day_count)
     try:
-        result, _ = verify_ruuid(ru, document, ct_source=CrtShSource())
+        result, _ = verify_ruuid(ru, document, cache=_ct_cache(args))
     except ValueError as e:  # no committed key, etc.
         print(f"verification: UNVERIFIABLE — {e}", file=sys.stderr)
         return 1
@@ -608,6 +606,14 @@ def cmd_coverage(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ct_cache(args: argparse.Namespace):
+    """The IP -> CT-certs cache selected by --no-cache / --cache-dir, or None."""
+    if getattr(args, "no_cache", False):
+        return None
+    from ruuid.verify import IpCertCache
+    return IpCertCache(getattr(args, "cache_dir", None))
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Verify an RUUID's genesis proof against CT (experimental)."""
     from ruuid.core import RUUID
@@ -633,7 +639,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"ruuid verify: cannot read custody: {e}", file=sys.stderr)
             return 1
     try:
-        result, gathered = verify_ruuid(ru, document, custody=custody)
+        result, gathered = verify_ruuid(
+            ru, document, custody=custody, cache=_ct_cache(args)
+        )
     except (ValueError, RuntimeError) as e:
         print(f"ruuid verify: {e}", file=sys.stderr)
         return 1
@@ -764,6 +772,15 @@ def _build_parser() -> argparse.ArgumentParser:
              "step). A document whose key is not the CT genesis key is "
              "rejected (exit non-zero); a day-range disclaim is flagged as an "
              "honest successor. Overrides the normal output modes.",
+    )
+    r.add_argument(
+        "--no-cache", action="store_true",
+        help="with --verify, do not use the local per-IP CT cache",
+    )
+    r.add_argument(
+        "--cache-dir", default=None, metavar="DIR",
+        help="with --verify, the per-IP CT cache directory "
+             "(default: ~/.ruuid/ct-cache/)",
     )
     r.set_defaults(func=cmd_resolve)
 
@@ -1010,6 +1027,16 @@ def _build_parser() -> argparse.ArgumentParser:
     v.add_argument(
         "--emit-custody", default=None, metavar="FILE",
         help="write the custody bundle used for verification to FILE",
+    )
+    v.add_argument(
+        "--no-cache", action="store_true",
+        help="do not use the local per-IP CT cache",
+    )
+    v.add_argument(
+        "--cache-dir", default=None, metavar="DIR",
+        help="per-IP CT cache directory (default: ~/.ruuid/ct-cache/). "
+             "Cached genesis facts are immutable, so entries never expire; "
+             "one CT fetch per IP green-lights every RUUID for that IP locally.",
     )
     v.set_defaults(func=cmd_verify)
 

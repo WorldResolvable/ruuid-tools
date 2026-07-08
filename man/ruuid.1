@@ -543,6 +543,18 @@ from CT.
 .B \-\-emit-custody \fIFILE\fR
 Write the custody bundle used for verification to
 .IR FILE .
+.TP
+.B \-\-no-cache ", " \-\-cache-dir " \fIDIR\fR"
+Control the permanent per-IP CT cache (default
+.IR ~/.ruuid/ct-cache/ ).
+Genesis verification depends only on
+.RI ( IP ,\  day )
+and CT is backdate-proof, so a cached IP entry is an immutable historical fact
+that never expires: the first RUUID for an IP does the CT fetch, and every
+later RUUID for that IP (any covered day, any sequence) is green-lit locally
+with no network.
+.B \-\-no-cache
+disables it.
 .SH FILES
 .TP
 .I /etc/ruuid/anchor-cert.pem
