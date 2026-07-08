@@ -269,6 +269,37 @@ pinned successor.
 > the Verifiable Custody Chains design notes ahead of its `-01` write-up;
 > the UUID-document proof shape in particular is expected to evolve.
 
+### Rotating the key (experimental)
+
+`ruuid rotate <state-dir>` moves an RUUID's authority to the successor that
+`seal --pre-rotate` pinned. `state-dir` is the previous generation's
+directory (the seal, or an earlier rotate) holding the cold `next-key.pem`
+and its record. Rotation:
+
+- **activates the pinned successor `K2`** (checking it matches the recorded
+  commitment) — this needs *no access to the old key*, so it works even when
+  the old key is **compromised**;
+- generates a fresh cold `K3` and publishes `K2`'s commitment to it (a cert
+  under `K2` whose dNSName encodes `spki(K3)`), making `K2` live in CT and
+  pinning the next successor;
+- writes a new `uuid-document.json` committing `K2`, plus a `rotation.json`
+  generation record.
+
+```
+$ ruuid rotate ~/.ruuid/seals/<uuid> --webroot /var/www/html
+rotated:      <uuid>  (generation 1)
+prev key:     <K1 SPKI>
+active key:   <K2 SPKI>
+next key:     <K3 SPKI>  (cold)
+committed as: k<base32>.rotate.<domain>
+```
+
+Publish the new document (it commits `K2`); back up the new `next-key.pem`
+(`K3`) offline. A verifier walks the chain in CT — genesis `K1` → its
+committed `K2` → `K2`'s committed `K3` … to the tip the document commits —
+with earliest-SCT-wins to defeat a compromised-key fork. Rotate again from
+the new generation's directory to advance to `K3`, and so on.
+
 ### Checking day coverage (experimental)
 
 A genesis certificate never needs *renewing* for liveness — the proof is

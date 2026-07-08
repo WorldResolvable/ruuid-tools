@@ -369,6 +369,83 @@ def test_seal_without_pre_rotate_has_no_next_key(ptr_ns, tmp_path):
     assert not (tmp_path / "s" / "next-key.pem").exists()
 
 
+# --- rotate (key succession) ---------------------------------------------
+
+def _key_spki(path):
+    import hashlib
+    der = subprocess.run(
+        ["openssl", "pkey", "-in", str(path), "-pubout", "-outform", "DER"],
+        check=True, capture_output=True,
+    ).stdout
+    return hashlib.sha256(der).hexdigest().upper()
+
+
+def test_rotate_activates_pinned_successor(ptr_ns, tmp_path):
+    from ruuid.seal import rotate, spki_from_commitment_label
+    acme = FakeAcme()
+    g0 = seal(
+        IP, DOMAIN, out_dir=tmp_path / "gen0", nameserver=_ns_arg(ptr_ns),
+        acme_runner=acme, challenge="http-01", pre_rotate=True,
+    )
+    k1, k2 = g0.spki_sha256, g0.next_key["spkiSha256"]
+
+    rot = rotate(tmp_path / "gen0", out_dir=tmp_path / "gen1", acme_runner=acme)
+    assert rot.generation == 1
+    assert rot.prev_key_spki == k1
+    assert rot.key_spki == k2                    # activated the pinned successor
+    k3 = rot.next_key_spki
+    assert k3 not in (k1, k2)
+
+    # new document commits the now-active key K2
+    assert rot.document["verificationMethod"][0]["publicKeyJwk"]["kid"] == k2
+    # the new commitment (under K2) decodes to the fresh cold K3
+    assert spki_from_commitment_label(rot.commitment_name.split(".")[0]) == k3
+
+    # gen1/key.pem is really K2; next-key.pem is K3
+    assert _key_spki(tmp_path / "gen1" / "key.pem") == k2
+    assert _key_spki(tmp_path / "gen1" / "next-key.pem") == k3
+    assert (tmp_path / "gen1" / "key.pem").stat().st_mode & 0o077 == 0
+
+    rj = json.loads((tmp_path / "gen1" / "rotation.json").read_text())
+    assert rj["generation"] == 1
+    assert rj["spkiSha256"] == k2 and rj["prevKeySpkiSha256"] == k1
+
+
+def test_rotate_chains_generations(ptr_ns, tmp_path):
+    from ruuid.seal import rotate
+    acme = FakeAcme()
+    seal(IP, DOMAIN, out_dir=tmp_path / "g0", nameserver=_ns_arg(ptr_ns),
+         acme_runner=acme, challenge="http-01", pre_rotate=True)
+    r1 = rotate(tmp_path / "g0", out_dir=tmp_path / "g1", acme_runner=acme)
+    r2 = rotate(tmp_path / "g1", out_dir=tmp_path / "g2", acme_runner=acme)
+    assert r2.generation == 2
+    assert r2.prev_key_spki == r1.key_spki       # gen2's prev = gen1's active
+    assert r2.key_spki == r1.next_key_spki        # gen2 activated gen1's pinned key
+
+
+def test_rotate_rejects_seal_without_pre_rotate(ptr_ns, tmp_path):
+    from ruuid.seal import rotate
+    seal(IP, DOMAIN, out_dir=tmp_path / "g0", nameserver=_ns_arg(ptr_ns),
+         acme_runner=FakeAcme(), challenge="http-01")   # no --pre-rotate
+    with pytest.raises(ValueError, match="no pinned successor"):
+        rotate(tmp_path / "g0", out_dir=tmp_path / "g1", acme_runner=FakeAcme())
+
+
+def test_rotate_rejects_mismatched_successor(ptr_ns, tmp_path):
+    from ruuid.seal import rotate
+    seal(IP, DOMAIN, out_dir=tmp_path / "g0", nameserver=_ns_arg(ptr_ns),
+         acme_runner=FakeAcme(), challenge="http-01", pre_rotate=True)
+    # swap in a different cold key that doesn't match the recorded commitment
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "EC",
+         "-pkeyopt", "ec_paramgen_curve:P-256",
+         "-out", str(tmp_path / "g0" / "next-key.pem")],
+        check=True, capture_output=True,
+    )
+    with pytest.raises(RuntimeError, match="does not match the recorded commitment"):
+        rotate(tmp_path / "g0", out_dir=tmp_path / "g1", acme_runner=FakeAcme())
+
+
 # --- webroot mode --------------------------------------------------------
 
 def test_seal_webroot_threads_through(ptr_ns, tmp_path):

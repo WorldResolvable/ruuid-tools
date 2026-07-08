@@ -85,6 +85,20 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .IR DIR ]
 .RB [ --include-staging ]
 .br
+.B ruuid rotate
+.I STATE_DIR
+.RB [ --out
+.IR DIR ]
+.RB [ --production ]
+.RB [ --challenge
+.IR WHAT ]
+.RB [ --webroot
+.IR DIR ]
+.RB [ --commit-host
+.IR HOST ]
+.RB [ --acme
+.IR PATH ]
+.br
 .B ruuid custody
 .I RUUID
 .RB [ --out
@@ -522,6 +536,55 @@ Directory of seal records to read (default
 .B \-\-include-staging
 Also count staging seals. By default only production seals count, since a staging
 certificate lands only in staging CT and proves nothing to third parties.
+.SH ROTATE
+.B ruuid rotate \fISTATE_DIR\fR [options]
+.PP
+.B (Experimental.)
+Rotate the key of an RUUID sealed with
+.BR "seal --pre-rotate" .
+.I STATE_DIR
+is the previous generation's directory (the seal, or an earlier rotate); it must
+hold the cold successor key
+.I next-key.pem
+and its record
+.RI ( seal.json " / " rotation.json ).
+Rotation activates that successor (verifying it matches the recorded commitment \(em
+no access to the old key is needed, so it works even if the old key is
+compromised), generates a fresh cold successor and publishes the new key's
+commitment to it in CT (a certificate under the new key whose dNSName encodes the
+successor's SPKI), and writes a new
+.I uuid-document.json
+committing the new key plus a
+.I rotation.json
+generation record. A verifier walks the chain in CT \(em genesis key, its committed
+successor, that key's committed successor, and so on to the tip the document
+commits \(em with earliest-SCT ordering to defeat a compromised-key fork. Needs a
+wildcard
+.RI * . <commit-host>
+record pointing at this host.
+.TP
+.B \-\-out \fIDIR\fR
+Output directory (default
+.IR ~/.ruuid/seals/<uuid>/gen<N>/ ).
+.TP
+.B \-\-production
+Use real Let's Encrypt (real CT) instead of staging.
+.TP
+.B \-\-challenge \fIauto\fR|\fIhttp-01\fR|\fItls-alpn-01\fR
+ACME challenge for the commitment certificate (default
+.IR auto ).
+.TP
+.B \-\-webroot \fIDIR\fR
+Serve the HTTP-01 challenge from a running web server's webroot.
+.TP
+.B \-\-commit-host \fIHOST\fR
+Host for the successor commitment dNSName (default
+.IR rotate.<domain> ).
+.TP
+.B \-\-acme \fIPATH\fR
+Path to the
+.B acme.sh
+script.
 .SH CUSTODY
 .B ruuid custody \fIRUUID\fR [options]
 .PP

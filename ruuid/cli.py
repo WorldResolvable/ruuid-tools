@@ -559,6 +559,27 @@ def cmd_seal(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rotate(args: argparse.Namespace) -> int:
+    """Rotate an RUUID's key to its pre-committed cold successor (experimental)."""
+    from ruuid.seal import render_rotate, rotate
+
+    try:
+        result = rotate(
+            args.state_dir,
+            out_dir=args.out,
+            production=args.production,
+            challenge=args.challenge,
+            webroot=args.webroot,
+            commit_host=args.commit_host,
+            acme_path=args.acme,
+        )
+    except (ValueError, RuntimeError, FileNotFoundError) as e:
+        print(f"ruuid rotate: {e}", file=sys.stderr)
+        return 1
+    print(render_rotate(result))
+    return 0
+
+
 def cmd_coverage(args: argparse.Namespace) -> int:
     """List / check which issue-days are already covered for an anchor."""
     import datetime as _dt
@@ -1074,6 +1095,51 @@ def _build_parser() -> argparse.ArgumentParser:
         help="write custody.json to FILE (default: stdout)",
     )
     cu.set_defaults(func=cmd_custody)
+
+    ro = sub.add_parser(
+        "rotate",
+        help="(experimental) rotate an RUUID's key to its pinned cold successor",
+        description=(
+            "Rotate the key of an RUUID sealed with --pre-rotate. STATE_DIR is "
+            "the previous generation's directory (the seal, or an earlier "
+            "rotate); it must contain the cold successor key next-key.pem and "
+            "its record. Rotation activates that successor (verifying it "
+            "matches the recorded commitment — no access to the old key is "
+            "needed, so it works even if the old key is compromised), generates "
+            "a fresh cold successor and publishes the new key's commitment to "
+            "it in CT, and writes a new UUID document committing the new key. "
+            "Needs a wildcard *.<commit-host> record pointing at the host."
+        ),
+    )
+    ro.add_argument(
+        "state_dir",
+        help="previous generation's directory (seal dir or rotate dir)",
+    )
+    ro.add_argument(
+        "--out", default=None, metavar="DIR",
+        help="output directory (default: ~/.ruuid/seals/<uuid>/gen<N>/)",
+    )
+    ro.add_argument(
+        "--production", action="store_true",
+        help="use real Let's Encrypt (real CT) instead of staging",
+    )
+    ro.add_argument(
+        "--challenge", choices=["auto", "http-01", "tls-alpn-01"], default="auto",
+        help="ACME challenge for the commitment cert (default: auto)",
+    )
+    ro.add_argument(
+        "--webroot", default=None, metavar="DIR",
+        help="serve the HTTP-01 challenge from a running web server's webroot",
+    )
+    ro.add_argument(
+        "--commit-host", default=None, metavar="HOST",
+        help="host for the successor commitment dNSName (default rotate.<domain>)",
+    )
+    ro.add_argument(
+        "--acme", default=None, metavar="PATH",
+        help="path to the acme.sh script",
+    )
+    ro.set_defaults(func=cmd_rotate)
     return p
 
 

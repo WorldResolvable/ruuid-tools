@@ -594,6 +594,56 @@ def _build_document(ru: RUUID, *, jwk: dict) -> dict:
     }
 
 
+# --- key succession helpers ---------------------------------------------
+
+def _key_spki_sha256(openssl: str, key_path: Path) -> str:
+    """SHA-256 of a private key's SubjectPublicKeyInfo (its key id)."""
+    der = _run([openssl, "pkey", "-in", str(key_path), "-pubout", "-outform", "DER"])
+    return hashlib.sha256(der).hexdigest().upper()
+
+
+def _publish_commitment(
+    openssl: str,
+    acme_runner: AcmeRunner,
+    *,
+    signing_key_path: Path,
+    out_key_path: Path,
+    commit_host: str,
+    challenge: str,
+    staging: bool,
+    webroot: str | None,
+):
+    """Generate a fresh cold successor key and publish a CT commitment to it.
+
+    Writes the successor key to `out_key_path`, then issues a certificate
+    *under `signing_key_path`* whose dNSName encodes the successor's SPKI
+    (`k<base32>.<commit-host>`). The cert, signed by the signing key and
+    logged in append-only CT, pins the successor. Returns
+    `(successor_spki, commit_name, csr_path, cert_path, cert_info)`.
+    """
+    _run([
+        openssl, "genpkey", "-algorithm", "EC",
+        "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(out_key_path),
+    ])
+    der = _run(
+        [openssl, "pkey", "-in", str(out_key_path), "-pubout", "-outform", "DER"]
+    )
+    digest = hashlib.sha256(der).digest()
+    spki = digest.hex().upper()
+    commit_name = f"{commitment_label(digest)}.{commit_host}"
+
+    csr = out_key_path.parent / "commitment.csr"
+    _openssl_csr(openssl, signing_key_path, csr, san=f"DNS:{commit_name}", cn=None)
+    cert = out_key_path.parent / "commitment-cert.pem"
+    acme_runner(AcmeRequest(
+        mode="signcsr", key_path=signing_key_path, csr_path=csr,
+        cert_out=cert, identifier=commit_name, is_ip=False,
+        challenge=challenge, staging=staging, profile=None, webroot=webroot,
+    ))
+    info = _cert_info(openssl, cert, kind="commitment", identifier=commit_name)
+    return spki, commit_name, csr, cert, info
+
+
 # --- the command --------------------------------------------------------
 
 def seal(
@@ -702,36 +752,13 @@ def seal(
         commit_cert_path: Path | None = None
         if pre_rotate:
             next_key_path = tmpd / "next-key.pem"
-            _run([
-                openssl, "genpkey", "-algorithm", "EC",
-                "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(next_key_path),
-            ])
-            k2_der = _run(
-                [openssl, "pkey", "-in", str(next_key_path), "-pubout",
-                 "-outform", "DER"]
-            )
-            k2_digest = hashlib.sha256(k2_der).digest()
-            k2_spki = k2_digest.hex().upper()
             host = commit_host or f"rotate.{domain}"
-            commit_name = f"{commitment_label(k2_digest)}.{host}"
-
-            commit_csr = tmpd / "commitment.csr"
-            # CSR under the GENESIS key K1 (proves K1's holder made it).
-            # Empty subject: the commitment name is longer than a 64-char CN,
-            # and it lives in the SAN anyway.
-            _openssl_csr(
-                openssl, key_path, commit_csr, san=f"DNS:{commit_name}", cn=None,
-            )
-            commit_cert_path = tmpd / "commitment-cert.pem"
-            acme_runner(AcmeRequest(
-                mode="signcsr", key_path=key_path, csr_path=commit_csr,
-                cert_out=commit_cert_path, identifier=commit_name, is_ip=False,
-                challenge=chosen_challenge, staging=staging, profile=None,
-                webroot=webroot,
-            ))
-            commit_info = _cert_info(
-                openssl, commit_cert_path, kind="commitment", identifier=commit_name
-            )
+            k2_spki, commit_name, commit_csr, commit_cert_path, commit_info = \
+                _publish_commitment(
+                    openssl, acme_runner, signing_key_path=key_path,
+                    out_key_path=next_key_path, commit_host=host,
+                    challenge=chosen_challenge, staging=staging, webroot=webroot,
+                )
             if commit_info.spki_sha256 != key_id:
                 raise RuntimeError(
                     "commitment certificate is not under the genesis key"
@@ -909,6 +936,177 @@ def render_report(result: SealResult) -> str:
             "COLD — it is your pinned successor ***"
         )
     lines.append(f"artifacts:         {result.out_dir}")
+    return "\n".join(lines)
+
+
+# --- rotate -------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RotateResult:
+    ruuid: str
+    generation: int
+    prev_key_spki: str
+    key_spki: str            # the now-active key K_N
+    next_key_spki: str       # the freshly pinned successor K_{N+1}
+    commitment_name: str
+    staging: bool
+    out_dir: Path
+    document: dict
+    rotation: dict
+
+
+def rotate(
+    state_dir: Path | str,
+    *,
+    out_dir: Path | str | None = None,
+    production: bool = False,
+    challenge: str = "auto",
+    webroot: str | None = None,
+    commit_host: str | None = None,
+    acme_path: str | None = None,
+    acme_runner: AcmeRunner | None = None,
+) -> RotateResult:
+    """Rotate an RUUID's key to its pre-committed cold successor.
+
+    `state_dir` is the previous generation's directory (a `seal --pre-rotate`
+    seal, or an earlier `rotate`). It must hold the cold successor key
+    (`next-key.pem`) and a record (`seal.json` / `rotation.json`) naming the
+    key that committed it. Rotation:
+
+      - activates the successor `K2` (verifying it matches the recorded
+        commitment) — this needs no access to the previous key, so it works
+        even when that key is compromised;
+      - generates a fresh cold `K3` and publishes `K2`'s commitment to it
+        (a cert under `K2` whose dNSName encodes `spki(K3)`), which both
+        makes `K2` live in CT and pins the next successor;
+      - writes a new UUID document committing `K2`, and a generation record.
+
+    Raises ValueError/RuntimeError on a missing/mismatched successor or tool
+    failure.
+    """
+    openssl = _require("openssl")
+    state_dir = Path(state_dir)
+    state = None
+    for name in ("rotation.json", "seal.json"):
+        p = state_dir / name
+        if p.exists():
+            state = json.loads(p.read_text())
+            break
+    if state is None:
+        raise ValueError(f"no seal.json or rotation.json in {state_dir}")
+    nxt = state.get("nextKey")
+    if not nxt:
+        raise ValueError(
+            f"{state_dir} has no pinned successor (seal without --pre-rotate)"
+        )
+    ruuid = state["ruuid"]
+    domain = state["domain"]
+    prev_key_spki = state["spkiSha256"]
+    committed_next = nxt["spkiSha256"]
+    generation = state.get("generation", 0) + 1
+
+    active_key_src = state_dir / "next-key.pem"
+    if not active_key_src.exists():
+        raise ValueError(f"cold successor key not found at {active_key_src}")
+    active_spki = _key_spki_sha256(openssl, active_key_src)
+    if active_spki != committed_next:
+        raise RuntimeError(
+            f"cold key SPKI {active_spki} does not match the recorded "
+            f"commitment {committed_next}"
+        )
+
+    ru = RUUID.from_str(ruuid)
+    staging = not production
+    chosen = CHALLENGE_HTTP01 if webroot else _select_challenge(challenge)
+    if acme_runner is None:
+        resolved = _resolve_acme(acme_path)
+        acme_runner = lambda req: _run_acme_sh(req, acme_path=resolved)  # noqa: E731
+    host = commit_host or f"rotate.{domain}"
+
+    with tempfile.TemporaryDirectory(prefix="ruuid-rotate-") as tmp:
+        tmpd = Path(tmp)
+        active_key = tmpd / "key.pem"
+        shutil.copy(active_key_src, active_key)
+
+        new_next = tmpd / "next-key.pem"
+        next_spki, commit_name, _csr, commit_cert_path, commit_info = \
+            _publish_commitment(
+                openssl, acme_runner, signing_key_path=active_key,
+                out_key_path=new_next, commit_host=host,
+                challenge=chosen, staging=staging, webroot=webroot,
+            )
+        if commit_info.spki_sha256 != active_spki:
+            raise RuntimeError("commitment certificate is not under the rotated key")
+
+        jwk = _ec_public_jwk(openssl, active_key, kid=active_spki)
+        document = _build_document(ru, jwk=jwk)
+
+        if out_dir is None:
+            final = default_seals_dir() / ruuid / f"gen{generation}"
+        else:
+            final = Path(out_dir)
+        final.mkdir(parents=True, exist_ok=True)
+        try:
+            final.chmod(0o700)
+        except OSError:
+            pass
+        for fn in ("key.pem", "next-key.pem"):
+            dst = final / fn
+            shutil.copy(tmpd / fn, dst)
+            try:
+                dst.chmod(0o600)
+            except OSError:
+                pass
+        shutil.copy(commit_cert_path, final / "commitment-cert.pem")
+        commit_info = _replace_path(commit_info, final / "commitment-cert.pem")
+
+    rotation = {
+        "ruuid": ruuid,
+        "did": f"did:uuid:{ruuid}",
+        "domain": domain,
+        "generation": generation,
+        "createdAt": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "staging": staging,
+        "acmeServer": ACME_SERVER_STAGING if staging else ACME_SERVER_PRODUCTION,
+        "spkiSha256": active_spki,           # the now-active key
+        "prevKeySpkiSha256": prev_key_spki,  # the key that committed it
+        "nextKey": {
+            "spkiSha256": next_spki,
+            "commitmentName": commit_name,
+            "keyPath": str(final / "next-key.pem"),
+            "commitmentCertificate": commit_info.as_dict(include_path=True),
+        },
+        "artifacts": {
+            "key": str(final / "key.pem"),
+            "nextKey": str(final / "next-key.pem"),
+            "commitmentCert": str(final / "commitment-cert.pem"),
+            "document": str(final / "uuid-document.json"),
+        },
+    }
+    (final / "uuid-document.json").write_text(json.dumps(document, indent=2) + "\n")
+    (final / "rotation.json").write_text(json.dumps(rotation, indent=2) + "\n")
+
+    return RotateResult(
+        ruuid=ruuid, generation=generation, prev_key_spki=prev_key_spki,
+        key_spki=active_spki, next_key_spki=next_spki, commitment_name=commit_name,
+        staging=staging, out_dir=final, document=document, rotation=rotation,
+    )
+
+
+def render_rotate(result: RotateResult) -> str:
+    env = "STAGING (real CT requires --production)" if result.staging \
+        else "PRODUCTION (real Let's Encrypt + CT)"
+    lines = [
+        f"rotated:      {result.ruuid}  (generation {result.generation})",
+        f"environment:  {env}",
+        f"prev key:     {result.prev_key_spki}",
+        f"active key:   {result.key_spki}",
+        f"next key:     {result.next_key_spki}  (cold)",
+        f"committed as: {result.commitment_name}",
+        "*** publish the new uuid-document.json (it commits the active key), "
+        "and BACK UP next-key.pem OFFLINE — it is your next pinned successor ***",
+        f"artifacts:    {result.out_dir}",
+    ]
     return "\n".join(lines)
 
 
