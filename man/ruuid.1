@@ -17,6 +17,7 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .IR URL ]
 .RB [ --follow [= WHAT ]]
 .RB [ --verbose ]
+.RB [ --verify ]
 .br
 .B ruuid parse
 .I UUID
@@ -196,6 +197,19 @@ Print every step: detail block (network, reverse_name, domain, doc URI,
 referent URI), DNS trace (PTR + URI/TXT hops), the UUID document, the
 HTTP fetch trace (each GET, status, and any 302 alias hops), and the
 referent body.
+.TP
+.B \-\-verify
+.RB "(Experimental.)" " Fold the"
+.B verify
+check into resolution: fetch the candidate UUID document via the PTR path, then
+confirm its committed key is the Certificate-Transparency genesis key for the
+RUUID's IP and day. A document whose key is not the genesis key is rejected (exit
+non-zero) \(em so a party who acquired a released IP cannot hijack an old RUUID.
+If the document asserts a
+.I mintingDayRange
+that excludes the RUUID, the disclaim is flagged as an honest successor (route to
+the genuine controller, the key CT names) rather than an impostor. Overrides the
+normal output modes.
 .PP
 Default output is the UUID-document URI alone, one line, pipeable into
 .IR curl .

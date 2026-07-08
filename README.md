@@ -330,6 +330,37 @@ $ ruuid custody 002299ac-… > custody.json                             # do the
 $ ruuid verify 002299ac-… uuid-document.json --custody custody.json   # offline replay
 ```
 
+#### Commandeering-safe resolution: `resolve --verify`
+
+Plain `resolve` follows the PTR to whatever document the current IP holder
+serves — fast, but it trusts that holder. `resolve --verify` folds the CT
+check into resolution: it fetches the candidate document via PTR, then
+confirms its committed key is the CT-established genesis key for the RUUID's
+IP and day. A document whose key isn't the genesis key is rejected (exit
+non-zero) — so a party who acquired the released IP can't hijack an old
+RUUID.
+
+```
+$ ruuid resolve --verify 002299ac-52e1-8200-8002-64390cfe0000
+resolved:     uuid.zone  (https://uuid.zone/.well-known/uuid-document.json)
+…
+verdict:      VERIFIED — document commits the genesis key controlling 100.57.12.254 on 2026-07-08 (…)
+```
+
+A document may assert a **minting day-range** it is responsible for, as a
+cooperative triage hint:
+
+```json
+"mintingDayRange": { "from": "2026-07-07", "to": "2026-07-14" }
+```
+
+When a resolved RUUID's day falls outside that range, the current controller
+is disowning it (e.g. an honest successor after an IP transfer), and
+`resolve --verify` flags that — routing you to the genuine controller (the
+key CT names) rather than treating it as an impostor. It is a routing hint
+only, never a positive verdict: an in-range claim still has to pass the CT
+check, and a dishonest party gains nothing by lying about the range.
+
 ### Wire-format probes
 
 If you're writing your own RUUID generator or resolver in another

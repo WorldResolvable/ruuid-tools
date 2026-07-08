@@ -109,7 +109,81 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_resolve_verify(args: argparse.Namespace) -> int:
+    """`ruuid resolve --verify`: resolve the document, then check its committed
+    key against the CT-established genesis key (the anti-commandeering step).
+
+    The PTR path is a fast way to fetch a candidate document; CT is the
+    authority. A document whose key is not the CT genesis key is rejected —
+    and if the document also disclaims this RUUID (its minting day-range
+    excludes it), that is flagged as an honest successor rather than an
+    impostor.
+    """
+    from ruuid.core import RUUID
+    from ruuid.verify import (
+        CrtShSource, document_disclaims, render, verify_ruuid,
+    )
+
+    try:
+        ru = RUUID.from_str(args.uuid)
+    except ValueError as e:
+        print(f"ruuid resolve: invalid UUID: {e}", file=sys.stderr)
+        return 1
+    try:
+        out = resolve_ruuid(args.uuid, registry=args.registry, follow="document")
+    except ValueError as e:
+        print(f"ruuid resolve: {e}", file=sys.stderr)
+        return 1
+    except ResolveError as e:
+        print(f"ruuid resolve: {e}", file=sys.stderr)
+        return 1
+
+    domain = out.get("domain")
+    doc_uri = out.get("uuid_document_uri")
+    body = out.get("document")
+    print(f"resolved:     {domain}  ({doc_uri})")
+    if not body:
+        print("verification: UNVERIFIABLE — could not fetch the UUID document",
+              file=sys.stderr)
+        return 1
+    try:
+        document = json.loads(body)
+    except (ValueError, TypeError):
+        print("verification: UNVERIFIABLE — UUID document is not JSON",
+              file=sys.stderr)
+        return 1
+
+    day_count = ru.identifier >> 28
+    disclaimed = document_disclaims(document, day_count)
+    try:
+        result, _ = verify_ruuid(ru, document, ct_source=CrtShSource())
+    except ValueError as e:  # no committed key, etc.
+        print(f"verification: UNVERIFIABLE — {e}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"verification: error — {e}", file=sys.stderr)
+        return 1
+
+    print(render(result))
+    if not result.verified and result.genuine_keys:
+        if disclaimed:
+            print(
+                "note:         the fetched document DISCLAIMS this RUUID (its "
+                "minting day-range excludes this day) — an honest successor at "
+                "this IP. The genuine controller is the key above; fetch its "
+                "document from the genuine anchor."
+            )
+        else:
+            print(
+                "note:         the document claims this RUUID but commits a key "
+                "that is NOT the genesis key — treat as commandeered/impostor."
+            )
+    return 0 if result.verified else 1
+
+
 def cmd_resolve(args: argparse.Namespace) -> int:
+    if getattr(args, "verify", False):
+        return _cmd_resolve_verify(args)
     follow = "referent" if args.verbose else args.follow
     registry_trace: list | None = [] if args.verbose else None
     fetch_trace: list | None = [] if args.verbose else None
@@ -681,6 +755,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true",
         help="Precede the primary output with reverse_name / domain / "
              "uuid_document_uri / referent_uri details.",
+    )
+    r.add_argument(
+        "--verify", action="store_true",
+        help="(experimental) after resolving, check the fetched UUID "
+             "document's committed key against the Certificate-Transparency "
+             "genesis key for the RUUID's IP and day (the anti-commandeering "
+             "step). A document whose key is not the CT genesis key is "
+             "rejected (exit non-zero); a day-range disclaim is flagged as an "
+             "honest successor. Overrides the normal output modes.",
     )
     r.set_defaults(func=cmd_resolve)
 

@@ -436,6 +436,41 @@ def _ip_in_network(ip_str: str, network) -> bool:
         return False
 
 
+# --- minting day-range (a resolver triage / disclaimer hint) ------------
+
+def minting_day_range(document: dict) -> tuple[int, int] | None:
+    """The inclusive `day_count` range a document asserts it mints in.
+
+    Read from an optional top-level
+    `"mintingDayRange": {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}`. This is a
+    controller's cooperative claim — a cached hint of the union of its CT
+    certificate windows — used only as a routing/disclaimer signal (a resolved
+    RUUID outside the range is disowned by the current controller); it is never
+    a positive verdict (CT decides). Returns None when absent or malformed.
+    """
+    r = document.get("mintingDayRange")
+    if not isinstance(r, dict):
+        return None
+    try:
+        start = _dt.date.fromisoformat(r["from"])
+        end = _dt.date.fromisoformat(r["to"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    epoch = STRUCTURED_IDENTIFIER_EPOCH.date()
+    return ((start - epoch).days, (end - epoch).days)
+
+
+def document_disclaims(document: dict, day_count: int) -> bool:
+    """True if the document asserts a minting range that excludes `day_count`.
+
+    A disclaim means the current controller says "this RUUID is not mine"
+    (e.g. an honest successor after an IP transfer) — route to CT for the
+    genuine controller.
+    """
+    rng = minting_day_range(document)
+    return rng is not None and not (rng[0] <= day_count <= rng[1])
+
+
 def verify_ruuid(
     ru: RUUID,
     document: dict | None = None,

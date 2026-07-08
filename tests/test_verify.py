@@ -17,7 +17,9 @@ from ruuid.cli import main
 from ruuid.verify import (
     CtCert,
     anchor_ip,
+    document_disclaims,
     gather_custody,
+    minting_day_range,
     spki_sha256_from_jwk,
     verify,
     verify_ruuid,
@@ -200,6 +202,27 @@ def test_document_without_key_raises():
     custody = gather_custody(ru, FakeCt([GENESIS_CERT]))
     with pytest.raises(ValueError, match="verificationMethod"):
         verify(ru, {"id": "did:uuid:x"}, custody)
+
+
+# --- minting day-range (resolver triage) ---------------------------------
+
+def test_minting_day_range_and_disclaim():
+    # day_count 553 == 2026-07-08
+    doc = _document()
+    doc["mintingDayRange"] = {"from": "2026-07-07", "to": "2026-07-14"}
+    assert minting_day_range(doc) == (552, 559)
+    assert not document_disclaims(doc, 553)     # in range -> not disclaimed
+    assert document_disclaims(doc, 600)         # after range -> disclaimed
+    assert document_disclaims(doc, 400)         # before range -> disclaimed
+
+
+def test_disclaim_absent_or_malformed_range():
+    assert minting_day_range(_document()) is None          # no field
+    assert not document_disclaims(_document(), 553)
+    bad = _document()
+    bad["mintingDayRange"] = {"from": "nonsense"}
+    assert minting_day_range(bad) is None
+    assert not document_disclaims(bad, 553)
 
 
 # --- CLI -----------------------------------------------------------------
