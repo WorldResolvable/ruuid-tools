@@ -869,7 +869,12 @@ def _iter_seal_manifests(seals_dir: Path):
             continue
 
 
-def ip_coverage(ip: str, *, seals_dir: Path | str | None = None) -> list[DayCoverage]:
+def ip_coverage(
+    ip: str,
+    *,
+    seals_dir: Path | str | None = None,
+    production_only: bool = True,
+) -> list[DayCoverage]:
     """Merged issue-day spans already covered for `ip` by recorded seals.
 
     Reads every `seal.json` under `seals_dir` (default
@@ -879,10 +884,16 @@ def ip_coverage(ip: str, *, seals_dir: Path | str | None = None) -> list[DayCove
     recorded seal corresponds to a real CT-logged certificate, so the
     result is the set of days the issuer can already prove control for
     without issuing a new certificate.
+
+    `production_only` (default True) skips staging seals: a staging cert
+    lands only in staging CT and proves nothing to third parties, so
+    counting it would overstate the days actually coverable.
     """
     seals_dir = Path(seals_dir) if seals_dir is not None else default_seals_dir()
     intervals: list[tuple[int, int, str]] = []
     for manifest in _iter_seal_manifests(seals_dir):
+        if production_only and manifest.get("staging"):
+            continue
         cert = manifest.get("ipCertificate") or {}
         if cert.get("identifier") != ip:
             continue

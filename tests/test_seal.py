@@ -437,11 +437,12 @@ def test_cli_seal_webroot(ptr_ns, tmp_path, monkeypatch, capsys):
 
 # --- coverage ------------------------------------------------------------
 
-def _write_seal(seals_dir, ruuid_str, ip, not_before, not_after):
+def _write_seal(seals_dir, ruuid_str, ip, not_before, not_after, staging=False):
     d = seals_dir / ruuid_str
     d.mkdir(parents=True)
     (d / "seal.json").write_text(json.dumps({
         "ruuid": ruuid_str,
+        "staging": staging,
         "ipCertificate": {
             "identifier": ip,
             "notBefore": not_before,
@@ -491,6 +492,21 @@ def test_ip_coverage_disjoint_windows_stay_separate(tmp_path):
     assert len(ranges) == 2
     gap_day = days_since_epoch(_dt.datetime(2026, 8, 1, tzinfo=_dt.timezone.utc))
     assert find_coverage(ranges, gap_day) is None
+
+
+def test_ip_coverage_excludes_staging_by_default(tmp_path):
+    from ruuid.seal import ip_coverage
+    _write_seal(tmp_path, "prod", IP,
+                "2026-07-07T00:00:00+00:00", "2026-07-14T00:00:00+00:00",
+                staging=False)
+    _write_seal(tmp_path, "stg", IP,
+                "2026-09-01T00:00:00+00:00", "2026-09-08T00:00:00+00:00",
+                staging=True)
+    prod_only = ip_coverage(IP, seals_dir=tmp_path)
+    assert len(prod_only) == 1
+    assert prod_only[0].seals == ("prod",)
+    with_staging = ip_coverage(IP, seals_dir=tmp_path, production_only=False)
+    assert len(with_staging) == 2
 
 
 def test_cli_coverage_exit_codes(tmp_path, capsys):

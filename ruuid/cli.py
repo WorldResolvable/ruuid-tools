@@ -499,7 +499,9 @@ def cmd_coverage(args: argparse.Namespace) -> int:
         print(f"ruuid coverage: {e}", file=sys.stderr)
         return 1
     seals_dir = Path(args.seals) if args.seals else default_seals_dir()
-    ranges = ip_coverage(ip, seals_dir=seals_dir)
+    ranges = ip_coverage(
+        ip, seals_dir=seals_dir, production_only=not args.include_staging
+    )
 
     if args.day is not None:
         target = days_since_epoch(args.day)
@@ -830,6 +832,11 @@ def _build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--seals", default=None, metavar="DIR",
         help="directory of seal records to read (default: ~/.ruuid/seals/)",
+    )
+    c.add_argument(
+        "--include-staging", action="store_true",
+        help="also count staging seals (by default only production seals "
+             "count; a staging cert proves nothing to third parties)",
     )
     c.set_defaults(func=cmd_coverage)
     return p
