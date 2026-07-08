@@ -435,6 +435,80 @@ def test_cli_seal_webroot(ptr_ns, tmp_path, monkeypatch, capsys):
     assert "webroot /var/www/acme" in capsys.readouterr().out
 
 
+# --- coverage ------------------------------------------------------------
+
+def _write_seal(seals_dir, ruuid_str, ip, not_before, not_after):
+    d = seals_dir / ruuid_str
+    d.mkdir(parents=True)
+    (d / "seal.json").write_text(json.dumps({
+        "ruuid": ruuid_str,
+        "ipCertificate": {
+            "identifier": ip,
+            "notBefore": not_before,
+            "notAfter": not_after,
+        },
+    }))
+
+
+def test_ip_coverage_single_window(tmp_path):
+    from ruuid.seal import ip_coverage
+    _write_seal(tmp_path, "aaa", IP,
+                "2026-07-07T23:15:18+00:00", "2026-07-14T23:15:17+00:00")
+    ranges = ip_coverage(IP, seals_dir=tmp_path)
+    assert len(ranges) == 1
+    assert ranges[0].start_date.isoformat() == "2026-07-07"
+    assert ranges[0].end_date.isoformat() == "2026-07-14"
+    assert ranges[0].covers(days_since_epoch(
+        _dt.datetime(2026, 7, 10, tzinfo=_dt.timezone.utc)))
+    assert not ranges[0].covers(days_since_epoch(
+        _dt.datetime(2026, 8, 1, tzinfo=_dt.timezone.utc)))
+
+
+def test_ip_coverage_merges_adjacent_and_filters_ip(tmp_path):
+    from ruuid.seal import ip_coverage
+    # two adjacent windows for IP -> one merged span
+    _write_seal(tmp_path, "aaa", IP,
+                "2026-07-07T00:00:00+00:00", "2026-07-14T00:00:00+00:00")
+    _write_seal(tmp_path, "bbb", IP,
+                "2026-07-15T00:00:00+00:00", "2026-07-22T00:00:00+00:00")
+    # a window for a DIFFERENT ip must be ignored
+    _write_seal(tmp_path, "ccc", "198.51.100.7",
+                "2026-07-07T00:00:00+00:00", "2026-07-14T00:00:00+00:00")
+    ranges = ip_coverage(IP, seals_dir=tmp_path)
+    assert len(ranges) == 1
+    assert ranges[0].start_date.isoformat() == "2026-07-07"
+    assert ranges[0].end_date.isoformat() == "2026-07-22"
+    assert set(ranges[0].seals) == {"aaa", "bbb"}
+
+
+def test_ip_coverage_disjoint_windows_stay_separate(tmp_path):
+    from ruuid.seal import find_coverage, ip_coverage
+    _write_seal(tmp_path, "aaa", IP,
+                "2026-07-07T00:00:00+00:00", "2026-07-14T00:00:00+00:00")
+    _write_seal(tmp_path, "bbb", IP,
+                "2026-09-01T00:00:00+00:00", "2026-09-08T00:00:00+00:00")
+    ranges = ip_coverage(IP, seals_dir=tmp_path)
+    assert len(ranges) == 2
+    gap_day = days_since_epoch(_dt.datetime(2026, 8, 1, tzinfo=_dt.timezone.utc))
+    assert find_coverage(ranges, gap_day) is None
+
+
+def test_cli_coverage_exit_codes(tmp_path, capsys):
+    _write_seal(tmp_path, "aaa", IP,
+                "2026-07-07T00:00:00+00:00", "2026-07-14T00:00:00+00:00")
+    assert main(["coverage", IP, "--seals", str(tmp_path),
+                 "--day", "2026-07-10"]) == 0
+    assert "COVERED" in capsys.readouterr().out
+    assert main(["coverage", IP, "--seals", str(tmp_path),
+                 "--day", "2026-08-01"]) == 1
+    assert "NOT COVERED" in capsys.readouterr().err
+
+
+def test_cli_coverage_empty(tmp_path, capsys):
+    assert main(["coverage", IP, "--seals", str(tmp_path)]) == 0
+    assert "no sealed coverage" in capsys.readouterr().out
+
+
 def test_cli_seal_ptr_mismatch(test_ns, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(seal_mod, "_resolve_acme", lambda p: "acme.sh")
     monkeypatch.setattr(

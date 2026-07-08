@@ -24,6 +24,7 @@ Subcommands:
                                [--production] [--challenge WHAT] [--webroot DIR]
                                [--no-domain-cert] [--nameserver HOST[:PORT]]
                                [--acme PATH]
+    ruuid coverage <address> [--day DATE] [--seals DIR]
 
 Resolve has five output modes:
   - default: the UUID-document URI on one line (pipeable into curl).
@@ -484,6 +485,53 @@ def cmd_seal(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_coverage(args: argparse.Namespace) -> int:
+    """List / check which issue-days are already covered for an anchor."""
+    import datetime as _dt
+
+    from ruuid.generate import days_since_epoch
+    from ruuid.resolve import to_ip
+    from ruuid.seal import default_seals_dir, find_coverage, ip_coverage
+
+    try:
+        ip = to_ip(args.address)
+    except ValueError as e:
+        print(f"ruuid coverage: {e}", file=sys.stderr)
+        return 1
+    seals_dir = Path(args.seals) if args.seals else default_seals_dir()
+    ranges = ip_coverage(ip, seals_dir=seals_dir)
+
+    if args.day is not None:
+        target = days_since_epoch(args.day)
+        date = args.day.date().isoformat()
+        span = find_coverage(ranges, target)
+        if span is not None:
+            print(
+                f"{date} (day_count {target}): COVERED — "
+                f"window {span.start_date.isoformat()}..{span.end_date.isoformat()} "
+                f"(seal {span.seals[0]})"
+            )
+            return 0
+        print(
+            f"{date} (day_count {target}): NOT COVERED — run "
+            f"`ruuid seal {ip} <domain>` on a day in range to cover it",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not ranges:
+        print(f"no sealed coverage for {ip} under {seals_dir}")
+        return 0
+    print(f"covered issue-days for {ip} (from {seals_dir}):")
+    for span in ranges:
+        print(
+            f"  {span.start_date.isoformat()} .. {span.end_date.isoformat()}   "
+            f"day_count {span.start_day}..{span.end_day}   "
+            f"({len(span.seals)} seal(s): {', '.join(span.seals)})"
+        )
+    return 0
+
+
 class _QuietParser(argparse.ArgumentParser):
     """ArgumentParser that suppresses the redundant 'error: ...' line.
 
@@ -756,6 +804,34 @@ def _build_parser() -> argparse.ArgumentParser:
              "~/.acme.sh/acme.sh)",
     )
     s.set_defaults(func=cmd_seal)
+
+    c = sub.add_parser(
+        "coverage",
+        help="(experimental) list/check which issue-days a seal already covers",
+        description=(
+            "For an anchor address, report the ranges of issue-days (day_count) "
+            "already provable from recorded seals — each `seal.json` is one "
+            "CT-logged genesis certificate, and its IP cert's validity window is "
+            "a band of coverable days. A genesis cert never needs renewing for "
+            "liveness; you only need a fresh `ruuid seal` to mint on a day no "
+            "existing certificate covers. With --day, check one date and exit "
+            "non-zero if it is not covered (scriptable: seal only when needed)."
+        ),
+    )
+    c.add_argument(
+        "address",
+        help="IPv4/IPv6 address (or hostname) whose sealed coverage to report",
+    )
+    c.add_argument(
+        "--day", type=_parse_day, default=None, metavar="DATE",
+        help="check whether this day (YYYY-MM-DD or integer day_count since "
+             "2025-01-01 UTC) is already covered; exit 1 if not",
+    )
+    c.add_argument(
+        "--seals", default=None, metavar="DIR",
+        help="directory of seal records to read (default: ~/.ruuid/seals/)",
+    )
+    c.set_defaults(func=cmd_coverage)
     return p
 
 

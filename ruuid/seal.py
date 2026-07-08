@@ -66,7 +66,12 @@ from typing import Callable
 import dns.exception
 
 from ruuid.core import RUUID
-from ruuid.generate import SEQUENCE_BITS, new_ruuid
+from ruuid.generate import (
+    SEQUENCE_BITS,
+    STRUCTURED_IDENTIFIER_EPOCH,
+    days_since_epoch,
+    new_ruuid,
+)
 from ruuid.resolve import DnsTransport, reverse_name_for_ip, to_ip
 
 
@@ -816,3 +821,101 @@ def render_report(result: SealResult) -> str:
         lines.append("domain cert:       (skipped)")
     lines.append(f"artifacts:         {result.out_dir}")
     return "\n".join(lines)
+
+
+# --- day coverage -------------------------------------------------------
+
+def default_seals_dir() -> Path:
+    """Where `seal` writes its per-anchor records by default."""
+    return Path.home() / ".ruuid" / "seals"
+
+
+def _day_to_date(day_count: int) -> _dt.date:
+    return (STRUCTURED_IDENTIFIER_EPOCH + _dt.timedelta(days=day_count)).date()
+
+
+@dataclass(frozen=True)
+class DayCoverage:
+    """A contiguous span of issue-days provable by one or more genesis certs.
+
+    `start_day`/`end_day` are inclusive `day_count`s (days since the RUUID
+    epoch, 2025-01-01 UTC); `seals` are the RUUIDs whose IP cert windows
+    contribute to the span.
+    """
+
+    start_day: int
+    end_day: int
+    seals: tuple[str, ...]
+
+    @property
+    def start_date(self) -> _dt.date:
+        return _day_to_date(self.start_day)
+
+    @property
+    def end_date(self) -> _dt.date:
+        return _day_to_date(self.end_day)
+
+    def covers(self, day_count: int) -> bool:
+        return self.start_day <= day_count <= self.end_day
+
+
+def _iter_seal_manifests(seals_dir: Path):
+    if not seals_dir.is_dir():
+        return
+    for manifest in sorted(seals_dir.glob("*/seal.json")):
+        try:
+            yield json.loads(manifest.read_text())
+        except (OSError, ValueError):
+            continue
+
+
+def ip_coverage(ip: str, *, seals_dir: Path | str | None = None) -> list[DayCoverage]:
+    """Merged issue-day spans already covered for `ip` by recorded seals.
+
+    Reads every `seal.json` under `seals_dir` (default
+    `~/.ruuid/seals/`), takes the `notBefore..notAfter` window of each
+    IP-SAN certificate anchored to `ip`, converts it to an inclusive
+    `day_count` range, and merges overlapping or adjacent ranges. Each
+    recorded seal corresponds to a real CT-logged certificate, so the
+    result is the set of days the issuer can already prove control for
+    without issuing a new certificate.
+    """
+    seals_dir = Path(seals_dir) if seals_dir is not None else default_seals_dir()
+    intervals: list[tuple[int, int, str]] = []
+    for manifest in _iter_seal_manifests(seals_dir):
+        cert = manifest.get("ipCertificate") or {}
+        if cert.get("identifier") != ip:
+            continue
+        nb, na = cert.get("notBefore"), cert.get("notAfter")
+        if not nb or not na:
+            continue
+        try:
+            start = days_since_epoch(_dt.datetime.fromisoformat(nb))
+            end = days_since_epoch(_dt.datetime.fromisoformat(na))
+        except ValueError:
+            continue
+        intervals.append((start, end, str(manifest.get("ruuid", "?"))))
+
+    intervals.sort()
+    merged: list[DayCoverage] = []
+    for start, end, ruuid_str in intervals:
+        if merged and start <= merged[-1].end_day + 1:
+            prev = merged[-1]
+            merged[-1] = DayCoverage(
+                prev.start_day,
+                max(prev.end_day, end),
+                prev.seals + (ruuid_str,),
+            )
+        else:
+            merged.append(DayCoverage(start, end, (ruuid_str,)))
+    return merged
+
+
+def find_coverage(
+    ranges: list[DayCoverage], day_count: int
+) -> DayCoverage | None:
+    """Return the span covering `day_count`, or None."""
+    for span in ranges:
+        if span.covers(day_count):
+            return span
+    return None

@@ -2,8 +2,8 @@
 
 Python library and command-line tools for
 [Resolvable UUIDs](https://github.com/WorldResolvable/ruuid-draft). Provides a `ruuid` CLI with
-`generate`, `resolve`, `parse`, `document`, `records`, `anchor`, and (experimental) `seal`
-subcommands, a Python API, and a demo.
+`generate`, `resolve`, `parse`, `document`, `records`, `anchor`, and (experimental) `seal` /
+`coverage` subcommands, a Python API, and a demo.
 
 ## Install
 
@@ -250,6 +250,32 @@ only the IP; domain control then rests on the local PTR check alone),
 > **Experimental.** This command prototypes the genesis-proof profile from
 > the Verifiable Custody Chains design notes ahead of its `-01` write-up;
 > the UUID-document proof shape in particular is expected to evolve.
+
+### Checking day coverage (experimental)
+
+A genesis certificate never needs *renewing* for liveness — the proof is
+historical, frozen in CT. You only need a fresh `seal` to mint an RUUID on
+a `day_count` that no existing certificate's validity window covers. Since
+each `seal` records the IP cert's window, `coverage` reports the issue-days
+you can already prove for an anchor, and (with `--day`) checks a specific
+date — exiting non-zero when it isn't covered, so it drives a "seal only
+when needed" script:
+
+```
+$ ruuid coverage 100.57.12.254
+covered issue-days for 100.57.12.254 (from ~/.ruuid/seals):
+  2026-07-07 .. 2026-07-14   day_count 552..559   (1 seal(s): 002299ac-...)
+
+$ ruuid coverage 100.57.12.254 --day 2026-07-10   # inside a window
+2026-07-10 (day_count 555): COVERED — window 2026-07-07..2026-07-14 (seal 002299ac-...)
+
+$ ruuid coverage 100.57.12.254 --day 2026-08-01 || \
+      ruuid seal 100.57.12.254 uuid.zone --production   # seal only if uncovered
+2026-08-01 (day_count 577): NOT COVERED — run `ruuid seal ...` to cover it
+```
+
+Coverage is read from the local `seal.json` records (each corresponds to a
+real CT-logged certificate); pass `--seals DIR` to point elsewhere.
 
 ### Wire-format probes
 
