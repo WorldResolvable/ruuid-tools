@@ -599,10 +599,27 @@ so key rotation extends it without a schema break. Needs only the RUUID (the
 genesis key is recovered from CT by IP, not from any document). Runnable anywhere
 with crt.sh access.
 .TP
+.B \-\-publish
+Instead of querying CT for one RUUID, aggregate this issuer's OWN on-disk
+certificates (the
+.I *-cert.pem
+files under the seals directory, never the private keys) into a self-contained
+.I uuid-custody.json
+to host at
+.IR https://<domain>/.well-known/uuid-custody.json .
+Needs no CT query and no RUUID \(em these certs are the CT-logged ones (they carry
+their own SCTs), so an issuer serves its own evidence and resolvers verify off it
+with
+.BR "\-\-bundles" .
+.TP
+.B \-\-seals \fIDIR\fR
+With
+.BR \-\-publish ,
+the seals directory to scan (default
+.IR ~/.ruuid/seals ).
+.TP
 .B \-\-out \fIFILE\fR
-Write
-.I custody.json
-to
+Write the bundle to
 .I FILE
 (default: stdout).
 .SH VERIFY
@@ -647,6 +664,15 @@ bundle (from
 .BR "ruuid custody" ),
 making the check offline and deterministic. Without it, the bundle is built live
 from CT.
+.TP
+.B \-\-bundles \fIDIR\fR
+Verify off a directory of pre-downloaded published custody bundles
+.RI ( uuid-custody.json
+files served by issuers at
+.IR /.well-known/uuid-custody.json )
+instead of live crt.sh. The bundles' certificates are unioned and indexed by IP
+and key locally, so verification runs entirely offline. Also accepted by
+.BR "resolve --verify" .
 .TP
 .B \-\-emit-custody \fIFILE\fR
 Write the custody bundle used for verification to

@@ -389,6 +389,33 @@ $ ruuid custody 002299ac-… > custody.json                             # do the
 $ ruuid verify 002299ac-… uuid-document.json --custody custody.json   # offline replay
 ```
 
+#### Published bundles: verifying without crt.sh
+
+An issuer already holds its own genesis/commitment certificates on disk (from
+`seal`/`rotate`), and those *are* the CT-logged certs — they carry their own
+SCTs. So **`custody --publish`** aggregates them into one self-contained
+`uuid-custody.json` (no CT query, no private keys — only `*-cert.pem` files
+are read) to host at a well-known URL:
+
+```
+$ ruuid custody --publish > uuid-custody.json      # from ~/.ruuid/seals
+# serve at https://<domain>/.well-known/uuid-custody.json
+```
+
+A resolver pre-downloads the `uuid-custody.json` files for the domains it
+regularly serves into a directory, and points `verify` / `resolve --verify`
+at it with **`--bundles DIR`** — verification then runs **entirely off the
+local bundles, no crt.sh**:
+
+```
+$ ruuid verify 002299ac-… uuid-document.json --bundles ./bundles/
+$ ruuid resolve 002299ac-… --verify --bundles ./bundles/
+```
+
+This turns crt.sh from a hard dependency into an optional independent-audit
+fallback: the bundles supply the evidence, and each certificate remains
+independently checkable against CT via its embedded SCTs.
+
 #### Commandeering-safe resolution: `resolve --verify`
 
 Plain `resolve` follows the PTR to whatever document the current IP holder

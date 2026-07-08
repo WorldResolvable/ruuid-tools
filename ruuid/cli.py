@@ -153,8 +153,12 @@ def _cmd_resolve_verify(args: argparse.Namespace) -> int:
 
     day_count = ru.identifier >> 28
     disclaimed = document_disclaims(document, day_count)
+    bundle_source = _ct_source(args)
     try:
-        result, _ = verify_ruuid(ru, document, cache=_ct_cache(args))
+        result, _ = verify_ruuid(
+            ru, document, ct_source=bundle_source,
+            cache=None if bundle_source is not None else _ct_cache(args),
+        )
     except ValueError as e:  # no committed key, etc.
         print(f"verification: UNVERIFIABLE — {e}", file=sys.stderr)
         return 1
@@ -637,6 +641,16 @@ def _ct_cache(args: argparse.Namespace):
     return IpCertCache(getattr(args, "cache_dir", None))
 
 
+def _ct_source(args: argparse.Namespace):
+    """A CT source from --bundles (pre-downloaded custody bundles), or None
+    to use the default live crt.sh source."""
+    bundles = getattr(args, "bundles", None)
+    if not bundles:
+        return None
+    from ruuid.verify import LocalBundleSource
+    return LocalBundleSource(bundles)
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Verify an RUUID's genesis proof against CT (experimental)."""
     from ruuid.core import RUUID
@@ -661,9 +675,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
         except (OSError, ValueError) as e:
             print(f"ruuid verify: cannot read custody: {e}", file=sys.stderr)
             return 1
+    bundle_source = _ct_source(args)
     try:
         result, gathered = verify_ruuid(
-            ru, document, custody=custody, cache=_ct_cache(args)
+            ru, document, custody=custody, ct_source=bundle_source,
+            cache=None if bundle_source is not None else _ct_cache(args),
         )
     except (ValueError, RuntimeError) as e:
         print(f"ruuid verify: {e}", file=sys.stderr)
@@ -675,20 +691,36 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_custody(args: argparse.Namespace) -> int:
-    """Build a CT custody bundle (custody.json) for an RUUID (experimental)."""
-    from ruuid.core import RUUID
-    from ruuid.verify import CrtShSource, gather_custody
+    """Build a CT custody bundle (custody.json) for an RUUID (experimental).
 
-    try:
-        ru = RUUID.from_str(args.ruuid)
-    except ValueError as e:
-        print(f"ruuid custody: invalid UUID: {e}", file=sys.stderr)
-        return 1
-    try:
-        custody = gather_custody(ru, CrtShSource())
-    except (ValueError, RuntimeError) as e:
-        print(f"ruuid custody: {e}", file=sys.stderr)
-        return 1
+    With --publish, aggregate this issuer's own on-disk certificates into a
+    single self-contained uuid-custody.json (no CT query, no RUUID needed) for
+    hosting at https://<domain>/.well-known/uuid-custody.json.
+    """
+    from ruuid.verify import (
+        CrtShSource, build_published_custody, default_seals_dir, gather_custody,
+    )
+
+    if args.publish:
+        seals = args.seals or str(default_seals_dir())
+        custody = build_published_custody(seals)
+    else:
+        from ruuid.core import RUUID
+        if not args.ruuid:
+            print("ruuid custody: an RUUID is required (or use --publish)",
+                  file=sys.stderr)
+            return 1
+        try:
+            ru = RUUID.from_str(args.ruuid)
+        except ValueError as e:
+            print(f"ruuid custody: invalid UUID: {e}", file=sys.stderr)
+            return 1
+        try:
+            custody = gather_custody(ru, CrtShSource())
+        except (ValueError, RuntimeError) as e:
+            print(f"ruuid custody: {e}", file=sys.stderr)
+            return 1
+
     text = json.dumps(custody, indent=2) + "\n"
     if args.out:
         Path(args.out).write_text(text)
@@ -804,6 +836,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--cache-dir", default=None, metavar="DIR",
         help="with --verify, the per-IP CT cache directory "
              "(default: ~/.ruuid/ct-cache/)",
+    )
+    r.add_argument(
+        "--bundles", default=None, metavar="DIR",
+        help="with --verify, verify off a directory of pre-downloaded "
+             "published custody bundles instead of live crt.sh",
     )
     r.set_defaults(func=cmd_resolve)
 
@@ -1062,6 +1099,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="pre-built custody.json bundle (else built live from CT)",
     )
     v.add_argument(
+        "--bundles", default=None, metavar="DIR",
+        help="verify off a directory of pre-downloaded published custody "
+             "bundles (uuid-custody.json) instead of live crt.sh",
+    )
+    v.add_argument(
         "--emit-custody", default=None, metavar="FILE",
         help="write the custody bundle used for verification to FILE",
     )
@@ -1089,10 +1131,25 @@ def _build_parser() -> argparse.ArgumentParser:
             "anywhere with crt.sh access."
         ),
     )
-    cu.add_argument("ruuid", help="RUUID in canonical text form")
+    cu.add_argument(
+        "ruuid", nargs="?", default=None,
+        help="RUUID in canonical text form (omit with --publish)",
+    )
+    cu.add_argument(
+        "--publish", action="store_true",
+        help="instead, aggregate this issuer's OWN on-disk certificates (from "
+             "the seals dir) into a self-contained uuid-custody.json to host at "
+             "https://<domain>/.well-known/uuid-custody.json — no CT query, no "
+             "RUUID needed (private keys are never included)",
+    )
+    cu.add_argument(
+        "--seals", default=None, metavar="DIR",
+        help="with --publish, the seals directory to scan "
+             "(default: ~/.ruuid/seals)",
+    )
     cu.add_argument(
         "--out", default=None, metavar="FILE",
-        help="write custody.json to FILE (default: stdout)",
+        help="write the bundle to FILE (default: stdout)",
     )
     cu.set_defaults(func=cmd_custody)
 

@@ -311,6 +311,70 @@ def test_verify_no_document_only_pinned_reports_genesis():
     assert result.chain == (SPKI,)                # K2 is only pinned, trimmed
 
 
+# --- published custody bundles (offline, crt.sh-free) --------------------
+
+def test_local_bundle_source_offline_verify(tmp_path):
+    from ruuid.verify import LocalBundleSource
+    ru = RUUID.from_str(RU_STR)
+    bundle = gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
+    d = tmp_path / "bundles"
+    d.mkdir()
+    (d / "uuid-custody.json").write_text(json.dumps(bundle))
+    # Verify the rotated document off the local bundle dir — no CT source.
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK),
+                             ct_source=LocalBundleSource(d))
+    assert result.verified
+    assert result.chain == (SPKI, K2_SPKI)
+
+
+def test_local_bundle_source_flat_shape(tmp_path):
+    from ruuid.verify import LocalBundleSource
+    ru = RUUID.from_str(RU_STR)
+    flat = {"kind": "uuid-custody",
+            "certificates": [GENESIS_CERT.as_dict(), K1_TO_K2.as_dict(),
+                             K2_TO_K3.as_dict()]}
+    p = tmp_path / "flat.json"
+    p.write_text(json.dumps(flat))
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK),
+                             ct_source=LocalBundleSource([p]))
+    assert result.verified
+
+
+def test_build_published_custody_excludes_private_keys(tmp_path):
+    import subprocess
+    from ruuid.verify import build_published_custody
+    seal_dir = tmp_path / "seals" / "ruuidX"
+    seal_dir.mkdir(parents=True)
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec",
+         "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+         "-keyout", str(seal_dir / "key.pem"),      # a PRIVATE KEY, must be skipped
+         "-out", str(seal_dir / "ip-cert.pem"), "-days", "7", "-subj", "/",
+         "-addext", "subjectAltName=IP:100.57.12.254"],
+        check=True, capture_output=True,
+    )
+    bundle = build_published_custody(tmp_path / "seals")
+    assert bundle["kind"] == "uuid-custody"
+    assert len(bundle["certificates"]) == 1           # only the -cert.pem
+    assert "100.57.12.254" in bundle["certificates"][0]["ipSans"]
+    blob = json.dumps(bundle)
+    assert "PRIVATE KEY" not in blob                  # no key material leaked
+
+
+def test_cli_verify_off_bundles(tmp_path, capsys):
+    ru = RUUID.from_str(RU_STR)
+    bundle = gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
+    d = tmp_path / "bundles"
+    d.mkdir()
+    (d / "uuid-custody.json").write_text(json.dumps(bundle))
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps(_document(jwk=K2_JWK)))
+    rc = main(["verify", RU_STR, str(doc), "--bundles", str(d)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "VERIFIED" in out and "custody chain" in out
+
+
 # --- per-IP cache / local green-lighting ---------------------------------
 
 class CountingCt(FakeCt):

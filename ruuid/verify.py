@@ -211,37 +211,95 @@ class CrtShSource:
         return certs
 
     def _parse_cert(self, pem: bytes, crtsh_id: int) -> CtCert:
-        import re
-        fields = _run(
-            [self._openssl, "x509", "-noout", "-serial", "-startdate", "-enddate"],
-            input_bytes=pem,
-        ).decode()
-        vals: dict[str, str] = {}
-        for line in fields.splitlines():
-            if "=" in line:
-                k, _, v = line.partition("=")
-                vals[k.strip()] = v.strip()
-        san = _run(
-            [self._openssl, "x509", "-noout", "-ext", "subjectAltName"],
-            input_bytes=pem,
-        ).decode()
-        ip_sans = tuple(re.findall(r"IP Address:([0-9A-Fa-f:.]+)", san))
-        dns_sans = tuple(re.findall(r"DNS:([^\s,]+)", san))
-        pub = _run(
-            [self._openssl, "x509", "-noout", "-pubkey"], input_bytes=pem
-        )
-        der = _run(
-            [self._openssl, "pkey", "-pubin", "-outform", "DER"], input_bytes=pub
-        )
-        return CtCert(
-            crtsh_id=crtsh_id,
-            serial=vals.get("serial", ""),
-            spki_sha256=hashlib.sha256(der).hexdigest().upper(),
-            not_before=_parse_time(vals.get("notBefore", "")),
-            not_after=_parse_time(vals.get("notAfter", "")),
-            ip_sans=ip_sans,
-            dns_sans=dns_sans,
-        )
+        return parse_cert_pem(pem, crtsh_id, openssl=self._openssl)
+
+
+def parse_cert_pem(pem: bytes, crtsh_id: int = 0, *, openssl: str = "openssl") -> CtCert:
+    """Parse a PEM certificate into a `CtCert` (serial, SPKI, window, SANs)."""
+    import re
+    fields = _run(
+        [openssl, "x509", "-noout", "-serial", "-startdate", "-enddate"],
+        input_bytes=pem,
+    ).decode()
+    vals: dict[str, str] = {}
+    for line in fields.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            vals[k.strip()] = v.strip()
+    san = _run(
+        [openssl, "x509", "-noout", "-ext", "subjectAltName"], input_bytes=pem,
+    ).decode()
+    ip_sans = tuple(re.findall(r"IP Address:([0-9A-Fa-f:.]+)", san))
+    dns_sans = tuple(re.findall(r"DNS:([^\s,]+)", san))
+    pub = _run([openssl, "x509", "-noout", "-pubkey"], input_bytes=pem)
+    der = _run([openssl, "pkey", "-pubin", "-outform", "DER"], input_bytes=pub)
+    return CtCert(
+        crtsh_id=crtsh_id,
+        serial=vals.get("serial", ""),
+        spki_sha256=hashlib.sha256(der).hexdigest().upper(),
+        not_before=_parse_time(vals.get("notBefore", "")),
+        not_after=_parse_time(vals.get("notAfter", "")),
+        ip_sans=ip_sans,
+        dns_sans=dns_sans,
+    )
+
+
+def _bundle_certs(obj: dict) -> list[CtCert]:
+    """Extract CtCerts from a custody bundle, tolerating both the per-RUUID
+    shape (`chain[*].certificates`) and a flat published shape
+    (`certificates`)."""
+    raw = list(obj.get("certificates") or [])
+    for gen in obj.get("chain") or []:
+        raw.extend(gen.get("certificates") or [])
+    out = []
+    for c in raw:
+        try:
+            out.append(CtCert.from_dict(c))
+        except Exception:
+            continue
+    return out
+
+
+class LocalBundleSource:
+    """`CtSource` served from pre-downloaded custody bundles — no crt.sh.
+
+    Point it at a directory of `*.json` custody bundles (e.g. a resolver's
+    cache of issuers' published `uuid-custody.json` files), or a list of bundle
+    files/dicts. It unions their certificates and answers `certs_for_ip` /
+    `certs_for_spki` locally, so `verify` and `resolve --verify` run
+    deterministically and offline against published evidence instead of the
+    (flaky) live CT index.
+    """
+
+    def __init__(self, source: "Path | str | list") -> None:
+        self._certs_list: list[CtCert] = []
+        paths: list[Path] = []
+        if isinstance(source, (str, Path)):
+            p = Path(source)
+            paths = sorted(p.glob("*.json")) if p.is_dir() else [p]
+        else:
+            for item in source:
+                if isinstance(item, dict):
+                    self._certs_list.extend(_bundle_certs(item))
+                else:
+                    paths.append(Path(item))
+        by_serial: dict[str, CtCert] = {}
+        for path in paths:
+            try:
+                obj = json.loads(Path(path).read_text())
+            except (OSError, ValueError):
+                continue
+            for c in _bundle_certs(obj):
+                by_serial.setdefault(c.serial, c)
+        for c in self._certs_list:
+            by_serial.setdefault(c.serial, c)
+        self._certs_list = list(by_serial.values())
+
+    def certs_for_ip(self, ip: str) -> list[CtCert]:
+        return [c for c in self._certs_list if ip in c.ip_sans]
+
+    def certs_for_spki(self, spki_sha256: str) -> list[CtCert]:
+        return [c for c in self._certs_list if c.spki_sha256 == spki_sha256]
 
 
 def _parse_time(value: str) -> _dt.datetime:
@@ -401,6 +459,49 @@ def _custody_bundle(ru: RUUID, certs: list[CtCert]) -> dict:
                 "certificates": [c.as_dict() for c in certs],
             }
         ],
+    }
+
+
+def build_published_custody(seals_dir: Path | str) -> dict:
+    """Aggregate an issuer's own on-disk certificates into a custody bundle.
+
+    Walks `seals_dir` (default `~/.ruuid/seals`) for certificate files
+    (`*-cert.pem` — never the `key.pem`/`next-key.pem` private keys) left by
+    `seal`/`rotate`, and emits a flat, self-contained `uuid-custody.json`:
+
+        { "kind": "uuid-custody", "generatedAt": ...,
+          "domains": [...], "networks": [...], "certificates": [ ... ] }
+
+    Publish it at e.g. `https://<domain>/.well-known/uuid-custody.json`. It
+    needs no CT query — these certs are the CT-logged ones (they carry their
+    own SCTs) — so an issuer serves its own evidence and resolvers verify off
+    it, with crt.sh reduced to an independent-audit fallback.
+    """
+    root = Path(seals_dir)
+    by_serial: dict[str, CtCert] = {}
+    for pem in sorted(root.rglob("*-cert.pem")):
+        try:
+            cert = parse_cert_pem(pem.read_bytes())
+        except (OSError, RuntimeError):
+            continue
+        by_serial.setdefault(cert.serial, cert)
+    domains, networks = set(), set()
+    for meta in list(root.rglob("seal.json")) + list(root.rglob("rotation.json")):
+        try:
+            d = json.loads(meta.read_text())
+        except (OSError, ValueError):
+            continue
+        if d.get("domain"):
+            domains.add(d["domain"])
+        if d.get("network"):
+            networks.add(d["network"])
+    certs = sorted(by_serial.values(), key=lambda c: c.not_before)
+    return {
+        "kind": "uuid-custody",
+        "generatedAt": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "domains": sorted(domains),
+        "networks": sorted(networks),
+        "certificates": [c.as_dict() for c in certs],
     }
 
 
