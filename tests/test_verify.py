@@ -442,6 +442,34 @@ def test_cascade_local_bundle_short_circuits(tmp_path):
     assert result.verified                        # fully local, no discovery
 
 
+def test_cascade_authoritative_bundle_skips_crtsh_for_cold_key(tmp_path):
+    # A complete local bundle is authoritative: the cold pinned successor K3
+    # (no certs of its own) must NOT trigger any crt.sh lookup.
+    from ruuid.verify import CascadingSource
+    ru = RUUID.from_str(RU_STR)
+    d = tmp_path / "b"
+    d.mkdir()
+    (d / "issuer.json").write_text(
+        json.dumps(gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3])))
+    )
+    calls = {"n": 0}
+
+    class CountCt:
+        def certs_for_ip(self, ip):
+            calls["n"] += 1
+            return []
+
+        def certs_for_spki(self, spki):
+            calls["n"] += 1
+            return []
+
+    src = CascadingSource(bundles_dir=d, crtsh_source=CountCt(),
+                          resolve_domains=lambda ip: [], fetch=lambda uri: None)
+    result, _ = verify_ruuid(ru, _document(jwk=K2_JWK), ct_source=src)
+    assert result.verified
+    assert calls["n"] == 0                        # crt.sh never consulted
+
+
 def test_cascade_wrong_domain_bundle_is_not_misleading(tmp_path):
     # A commandeer serves a bundle for a DIFFERENT identity; it must not verify
     # our RUUID — discovery is untrusted, CT genesis is the authority.

@@ -361,6 +361,11 @@ class CascadingSource:
         self._resolve_domains = resolve_domains or self._ptr_domains
         self._fetch = fetch or self._http_fetch
         self._tried_ips: set[str] = set()
+        # Set once certs_for_ip is answered from a (complete) published bundle:
+        # then a key absent from the pool is genuinely cold, not a crt.sh miss,
+        # so we must NOT fall through to crt.sh for it (which would be a slow,
+        # pointless lookup of a pinned successor that has no certs of its own).
+        self._authoritative = False
 
     def _add(self, certs: list[CtCert]) -> None:
         for c in certs:
@@ -371,15 +376,18 @@ class CascadingSource:
     # complete result per query — and is NOT merged into the pool, so a
     # partial crt.sh result can never short-circuit a later chain hop.
     def certs_for_ip(self, ip: str) -> list[CtCert]:
-        got = [c for c in self._pool.values() if ip in c.ip_sans]
+        got = [c for c in self._pool.values() if ip in c.ip_sans]  # 1. local
         if got:
+            self._authoritative = True
             return got
         if ip not in self._tried_ips:                 # 2. the issuer's bundle
             self._tried_ips.add(ip)
             if self._fetch_issuer(ip):
                 got = [c for c in self._pool.values() if ip in c.ip_sans]
                 if got:
+                    self._authoritative = True
                     return got
+        self._authoritative = False
         if self._crtsh is not None:                   # 3. crt.sh (live)
             return self._crtsh.certs_for_ip(ip)
         return got
@@ -388,9 +396,11 @@ class CascadingSource:
         got = [c for c in self._pool.values() if c.spki_sha256 == spki_sha256]
         if got:
             return got
-        if self._crtsh is not None:
-            return self._crtsh.certs_for_spki(spki_sha256)
-        return got
+        # A published bundle is complete for its chain: a key not in it is
+        # genuinely cold, so don't chase it through crt.sh.
+        if self._authoritative or self._crtsh is None:
+            return got
+        return self._crtsh.certs_for_spki(spki_sha256)
 
     def _fetch_issuer(self, ip: str) -> bool:
         for domain in self._resolve_domains(ip):
