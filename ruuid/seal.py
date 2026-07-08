@@ -396,6 +396,7 @@ def _run_acme_sh(req: AcmeRequest, *, acme_path: str) -> None:
             "--csr", str(req.csr_path),
             "--fullchain-file", str(req.cert_out),
             "--server", server,
+            "--force",   # always reissue; acme.sh else skips an unexpired cert
         ]
     if req.webroot:
         # Webroot HTTP-01: acme.sh drops the challenge token under

@@ -387,6 +387,7 @@ def test_run_acme_sh_argv_issue_webroot(tmp_path, monkeypatch):
     assert "--signcsr" not in argv
     assert "letsencrypt_test" in argv                # staging server
     assert "--cert-profile" in argv and "shortlived" in argv
+    assert "--force" in argv
 
 
 def test_run_acme_sh_argv_signcsr_standalone_modes(tmp_path, monkeypatch):
@@ -402,6 +403,7 @@ def test_run_acme_sh_argv_signcsr_standalone_modes(tmp_path, monkeypatch):
     argv = captured["argv"]
     assert "--signcsr" in argv and "--csr" in argv
     assert "--issue" not in argv
+    assert "--force" in argv
     assert "--alpn" in argv and "-w" not in argv and "--standalone" not in argv
     assert "letsencrypt" in argv and "letsencrypt_test" not in argv
 
