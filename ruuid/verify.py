@@ -745,6 +745,60 @@ def gather_custody(ru: RUUID, ct_source: CtSource) -> dict:
     return _custody_bundle(ru, _fetch_certs(ru, ct_source))
 
 
+def _network_for_ip(ip: str) -> str:
+    addr = ipaddress.ip_address(ip)
+    if addr.version == 4:
+        return str(ipaddress.ip_network(f"{ip}/32"))
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+
+
+def _fetch_certs_for_ip(ip: str, ct_source: CtSource) -> list[CtCert]:
+    """Every cert carrying `ip`, plus the forward chain from every key that ever
+    held one — IP-scoped and day-independent, so the bundle verifies *any* RUUID
+    on the IP."""
+    ip_certs = ct_source.certs_for_ip(ip)
+    by_serial = {c.serial: c for c in ip_certs}
+    visited: set[str] = set()
+    frontier = list({c.spki_sha256 for c in ip_certs})
+    while frontier and len(visited) < _MAX_GENERATIONS:
+        key = frontier.pop()
+        if key in visited:
+            continue
+        visited.add(key)
+        key_certs = ct_source.certs_for_spki(key)
+        for c in key_certs:
+            by_serial.setdefault(c.serial, c)
+        succ = _earliest_successor(key, key_certs)
+        if succ and succ not in visited:
+            frontier.append(succ)
+    return sorted(by_serial.values(), key=lambda c: c.not_before)
+
+
+def gather_custody_for_ip(
+    ip: str, ct_source: CtSource, *, source: str = "crt.sh"
+) -> dict:
+    """Custody bundle for an IP address (all its certs + chains), shared shape."""
+    certs = _fetch_certs_for_ip(ip, ct_source)
+    return {
+        "kind": "uuid-custody",
+        "source": source,
+        "generatedAt": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "networks": [_network_for_ip(ip)],
+        "certificates": [c.as_dict() for c in certs],
+    }
+
+
+def coverage_from_certs(certs: list[CtCert], ip: str) -> list:
+    """Merged issue-day spans `ip` has provable genesis coverage for, from the
+    validity windows of its IP-SAN certificates in `certs`."""
+    from ruuid.seal import merge_day_intervals
+    intervals = [
+        (days_since_epoch(c.not_before), days_since_epoch(c.not_after), c.serial)
+        for c in certs if ip in c.ip_sans           # IP-SAN genesis certs only
+    ]
+    return merge_day_intervals(intervals)
+
+
 class IpCertCache:
     """A permanent on-disk cache of the CT certificates for an IP.
 

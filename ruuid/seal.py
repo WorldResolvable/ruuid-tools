@@ -1203,18 +1203,27 @@ def ip_coverage(
             continue
         intervals.append((start, end, str(manifest.get("ruuid", "?"))))
 
-    intervals.sort()
+    return merge_day_intervals(intervals)
+
+
+def merge_day_intervals(
+    intervals: list[tuple[int, int, str]]
+) -> list[DayCoverage]:
+    """Merge `(start_day, end_day, label)` intervals into `DayCoverage` spans.
+
+    Overlapping or adjacent day ranges coalesce; each span records the labels
+    (RUUIDs for the seals path, certificate serials for the CT path) that
+    contribute to it.
+    """
     merged: list[DayCoverage] = []
-    for start, end, ruuid_str in intervals:
+    for start, end, label in sorted(intervals):
         if merged and start <= merged[-1].end_day + 1:
             prev = merged[-1]
             merged[-1] = DayCoverage(
-                prev.start_day,
-                max(prev.end_day, end),
-                prev.seals + (ruuid_str,),
+                prev.start_day, max(prev.end_day, end), prev.seals + (label,)
             )
         else:
-            merged.append(DayCoverage(start, end, (ruuid_str,)))
+            merged.append(DayCoverage(start, end, (label,)))
     return merged
 
 

@@ -2,8 +2,8 @@
 
 Python library and command-line tools for
 [Resolvable UUIDs](https://github.com/WorldResolvable/ruuid-draft). Provides a `ruuid` CLI with
-`generate`, `resolve`, `parse`, `document`, `records`, `anchor`, and (experimental) `seal` /
-`coverage` / `custody` / `verify` subcommands, a Python API, and a demo.
+`generate`, `resolve`, `parse`, `document`, `anchor`, and (experimental) `seal` /
+`rotate` / `custody` / `verify` / `sct` subcommands, a Python API, and a demo.
 
 ## Install
 
@@ -308,28 +308,28 @@ the new generation's directory to advance to `K3`, and so on.
 ### Checking day coverage (experimental)
 
 A genesis certificate never needs *renewing* for liveness — the proof is
-historical, frozen in CT. You only need a fresh `seal` to mint an RUUID on
-a `day_count` that no existing certificate's validity window covers. Since
-each `seal` records the IP cert's window, `coverage` reports the issue-days
-you can already prove for an anchor, and (with `--day`) checks a specific
-date — exiting non-zero when it isn't covered, so it drives a "seal only
-when needed" script:
+historical, frozen in CT. You only need a fresh `seal` to mint an RUUID on a
+`day_count` that no existing certificate's validity window covers. **`custody
+--summary <ip>`** reports the issue-days an IP already has provable genesis
+certificates for (merged from those certs' validity windows), and (with
+`--day`) checks a specific date — exiting non-zero when it isn't covered, so
+it drives a "seal only when needed" script:
 
 ```
-$ ruuid coverage 100.57.12.254
-covered issue-days for 100.57.12.254 (from ~/.ruuid/seals):
-  2026-07-07 .. 2026-07-14   day_count 552..559   (1 seal(s): 002299ac-...)
+$ ruuid custody 100.57.12.254 --summary                  # from CT (anyone)
+covered issue-days for 100.57.12.254:
+  2026-07-07 .. 2026-07-14   day_count 552..559   (1 cert(s))
 
-$ ruuid coverage 100.57.12.254 --day 2026-07-10   # inside a window
-2026-07-10 (day_count 555): COVERED — window 2026-07-07..2026-07-14 (seal 002299ac-...)
+$ ruuid custody 100.57.12.254 --summary --day 2026-07-10
+2026-07-10 (day_count 555): COVERED — window 2026-07-07..2026-07-14
 
-$ ruuid coverage 100.57.12.254 --day 2026-08-01 || \
-      ruuid seal 100.57.12.254 uuid.zone --production   # seal only if uncovered
-2026-08-01 (day_count 577): NOT COVERED — run `ruuid seal ...` to cover it
+$ ruuid custody 100.57.12.254 --summary --day 2026-08-01 || \
+      ruuid seal 100.57.12.254 uuid.zone --production     # seal only if uncovered
 ```
 
-Coverage is read from the local `seal.json` records (each corresponds to a
-real CT-logged certificate); pass `--seals DIR` to point elsewhere.
+Since it's part of `custody`, it works either from **CT** (anyone) or, with
+`--seals`, from the issuer's own records (`custody --summary --seals <ip>`) —
+the fast, crt.sh-free path on the issuer's box.
 
 ### Verifying a genesis proof (experimental)
 

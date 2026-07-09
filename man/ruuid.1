@@ -68,14 +68,6 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .RB [ --acme
 .IR PATH ]
 .br
-.B ruuid coverage
-.I ADDRESS
-.RB [ --day
-.IR DATE ]
-.RB [ --seals
-.IR DIR ]
-.RB [ --include-staging ]
-.br
 .B ruuid rotate
 .I STATE_DIR
 .RB [ --out
@@ -91,9 +83,12 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .IR PATH ]
 .br
 .B ruuid custody
-.RI [ RUUID ]
+.RI [ TARGET ]
 .RB [ --seals
 .RI [ DIR ]]
+.RB [ --summary
+.RB [ --day
+.IR DATE ]]
 .RB [ --out
 .IR FILE ]
 .br
@@ -426,7 +421,7 @@ SCTs, so one short-lived cert anchors an unbounded batch of RUUIDs sharing the
 same
 .RI ( network , " day_count" ).
 See
-.B ruuid coverage
+.B ruuid custody --summary
 for checking which issue-days a seal already covers.
 .TP
 .B \-\-type \fIN\fR
@@ -512,47 +507,6 @@ script (default: found on
 .I PATH
 or
 .IR ~/.acme.sh/acme.sh ).
-.SH COVERAGE
-.B ruuid coverage \fIADDRESS\fR [options]
-.PP
-.B (Experimental.)
-Report which issue-days
-.RI ( day_count )
-are already provable for an anchor. A genesis certificate is never renewed for
-liveness \(em the proof is historical, frozen in CT; a fresh
-.B ruuid seal
-is only needed to mint on a day no existing certificate's validity window covers.
-Each
-.I seal.json
-records the IP cert's window, so
-.B coverage
-lists the coverable day ranges (merging adjacent or overlapping windows) and,
-with
-.BR --day ,
-checks one date \(em exiting non-zero when it is not covered, so it scripts a
-"seal only when needed" workflow:
-.PP
-.RS
-.nf
-$ ruuid coverage 100.57.12.254 --day 2026-09-01 \[rs]
-      || ruuid seal 100.57.12.254 uuid.zone --production
-.fi
-.RE
-.TP
-.B \-\-day \fIDATE\fR
-Check whether this day
-.RB ( YYYY-MM-DD
-or integer
-.IR day_count )
-is covered; exit 1 if not.
-.TP
-.B \-\-seals \fIDIR\fR
-Directory of seal records to read (default
-.IR ~/.ruuid/seals/ ).
-.TP
-.B \-\-include-staging
-Also count staging seals. By default only production seals count, since a staging
-certificate lands only in staging CT and proves nothing to third parties.
 .SH ROTATE
 .B ruuid rotate \fISTATE_DIR\fR [options]
 .PP
@@ -603,15 +557,16 @@ Path to the
 .B acme.sh
 script.
 .SH CUSTODY
-.B ruuid custody \fR[\fIRUUID\fR] [\fB--seals\fR [\fIDIR\fR]] [options]
+.B ruuid custody \fR[\fITARGET\fR] [\fB--seals\fR [\fIDIR\fR]] [\fB--summary\fR [\fB--day\fR \fIDATE\fR]] [options]
 .PP
 .B (Experimental.)
 Build a
 .I custody.json
-evidence bundle. By default, query Certificate Transparency for the certificates
-that establish the RUUID's genesis \(em those carrying its IP-address SAN \(em plus
-the genesis key's forward chain, and emit the bundle. Needs only the RUUID (the key
-is recovered from CT by IP, not from any document) and is runnable anywhere with
+evidence bundle for a network anchor.
+.I TARGET
+is an IP address, a hostname that resolves to one, or a RUUID to extract the IP
+from. By default, query Certificate Transparency for the certificates carrying that
+IP plus their forward key chains, and emit the bundle \(em runnable anywhere with
 crt.sh access. Host the result at
 .IR https://<domain>/.well-known/uuid-custody.json ,
 where resolvers fetch it (see
@@ -625,11 +580,27 @@ bundle from the issuer's own certificate records \(em the
 files under the seals directory (default
 .IR ~/.ruuid/seals ,
 or
-.I DIR
-\(em never the private keys) \(em instead of querying CT. The output is identical;
+.IR DIR ,
+never the private keys) \(em instead of querying CT. The output is identical;
 reading local records is immediate (no waiting for CT to index a just-issued cert),
 offline, and needs no crt.sh, which is what keeps crt.sh off the critical path for
-publishing. No RUUID needed.
+publishing.
+.TP
+.B \-\-summary \fR[\fB--day\fR \fIDATE\fR] [\fB--include-staging\fR]
+Instead of the bundle, print which issue-days
+.RI ( day_count )
+the IP already has provable genesis certificates for (merging their validity
+windows). A genesis certificate is never renewed for liveness \(em the proof is
+historical \(em so a fresh
+.B ruuid seal
+is only needed to mint on a day no certificate covers. With
+.BR --day ,
+check one date and exit non-zero if it is not covered (scripts a "seal only when
+needed" workflow). With
+.BR --seals ,
+summarize from the issuer's records;
+.B --include-staging
+then also counts staging seals (default: production only).
 .TP
 .B \-\-out \fIFILE\fR
 Write the bundle to
@@ -786,8 +757,10 @@ owner-only), the certificates, the committing
 and a
 .I seal.json
 manifest.
-.B ruuid coverage
-reads these.
+.B ruuid custody --summary --seals
+and
+.B custody --seals
+read these.
 .SH EXAMPLES
 Mint an RUUID and resolve it against a local anchor (the default
 .B --registry

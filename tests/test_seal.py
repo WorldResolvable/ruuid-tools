@@ -640,19 +640,20 @@ def test_ip_coverage_excludes_staging_by_default(tmp_path):
     assert len(with_staging) == 2
 
 
-def test_cli_coverage_exit_codes(tmp_path, capsys):
+def test_cli_custody_summary_exit_codes(tmp_path, capsys):
+    # coverage folded into `custody --summary --seals`
     _write_seal(tmp_path, "aaa", IP,
                 "2026-07-07T00:00:00+00:00", "2026-07-14T00:00:00+00:00")
-    assert main(["coverage", IP, "--seals", str(tmp_path),
+    assert main(["custody", IP, "--seals", str(tmp_path), "--summary",
                  "--day", "2026-07-10"]) == 0
     assert "COVERED" in capsys.readouterr().out
-    assert main(["coverage", IP, "--seals", str(tmp_path),
+    assert main(["custody", IP, "--seals", str(tmp_path), "--summary",
                  "--day", "2026-08-01"]) == 1
     assert "NOT COVERED" in capsys.readouterr().err
 
 
-def test_cli_coverage_empty(tmp_path, capsys):
-    assert main(["coverage", IP, "--seals", str(tmp_path)]) == 0
+def test_cli_custody_summary_empty(tmp_path, capsys):
+    assert main(["custody", IP, "--seals", str(tmp_path), "--summary"]) == 0
     assert "no sealed coverage" in capsys.readouterr().out
 
 

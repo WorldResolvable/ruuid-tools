@@ -315,6 +315,28 @@ def test_custody_ct_and_seals_share_shape(tmp_path):
     assert [c["serial"] for c in ct["certificates"]] == ["genesis"]
 
 
+def test_gather_custody_for_ip_shape():
+    from ruuid.verify import gather_custody_for_ip
+    b = gather_custody_for_ip(IP, FakeCt([GENESIS_CERT]))
+    assert b["kind"] == "uuid-custody" and b["source"] == "crt.sh"
+    assert b["networks"] == ["100.57.12.254/32"]     # IP-scoped, no RUUID needed
+    assert [c["serial"] for c in b["certificates"]] == ["genesis"]
+
+
+def test_coverage_from_certs_merges_and_filters():
+    from ruuid.verify import coverage_from_certs
+    a = _cert(ip_sans=(IP,), nb="2026-07-07T00:00:00+00:00",
+              na="2026-07-14T00:00:00+00:00", serial="a")
+    b = _cert(ip_sans=(IP,), nb="2026-07-14T00:00:00+00:00",   # adjacent -> merges
+              na="2026-07-21T00:00:00+00:00", serial="b")
+    dns = _cert(dns_sans=("x.example",), nb="2026-07-08T00:00:00+00:00",
+                na="2026-10-06T00:00:00+00:00", serial="dns")  # not IP-SAN -> ignored
+    spans = coverage_from_certs([a, b, dns], IP)
+    assert len(spans) == 1                            # a and b coalesce
+    assert spans[0].start_date.isoformat() == "2026-07-07"
+    assert spans[0].end_date.isoformat() == "2026-07-21"
+
+
 def test_custody_bundle_follows_chain_forward():
     ru = RUUID.from_str(RU_STR)
     bundle = gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
