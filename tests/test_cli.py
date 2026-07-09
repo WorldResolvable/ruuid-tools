@@ -564,21 +564,34 @@ def test_document_fails_without_domain_when_ambiguous(tmp_path, capsys):
     assert "multiple" in capsys.readouterr().err
 
 
-def test_records_emits_zone_snippet_to_stdout(tmp_path, capsys):
-    p = _write_zone(tmp_path, {"domains": [
-        {
-            "domain": "x.example", "anchors": ["192.0.2.1"],
-            "service": [{"id": "#1", "type": "T",
-                         "serviceEndpoint": "https://x.example/t/<identifier>"}],
-        },
-    ]})
-    rc = main(["records", "--zone", str(p)])
+_ZONE_X = {"domains": [
+    {
+        "domain": "x.example", "anchors": ["192.0.2.1"],
+        "service": [{"id": "#1", "type": "T",
+                     "serviceEndpoint": "https://x.example/t/<identifier>"}],
+    },
+]}
+
+
+def test_anchor_export_records_to_stdout(tmp_path, capsys, monkeypatch):
+    import ruuid.anchor
+    monkeypatch.setattr(ruuid.anchor, "run", lambda *a, **k: 0)   # don't serve
+    p = _write_zone(tmp_path, _ZONE_X)
+    rc = main(["anchor", "--zone", str(p), "--export"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "1.2.0.192.in-addr.arpa. " in out
-    assert "PTR" in out
-    assert "URI" in out
-    assert "TXT" in out
+    assert "PTR" in out and "URI" in out and "TXT" in out
+
+
+def test_anchor_export_records_to_file(tmp_path, monkeypatch):
+    import ruuid.anchor
+    monkeypatch.setattr(ruuid.anchor, "run", lambda *a, **k: 0)
+    p = _write_zone(tmp_path, _ZONE_X)
+    out = tmp_path / "records.zone"
+    rc = main(["anchor", "--zone", str(p), "--export", str(out)])
+    assert rc == 0
+    assert "PTR" in out.read_text() and "_uuid.x.example." in out.read_text()
 
 
 # --- hostname acceptance --------------------------------------------------

@@ -14,12 +14,10 @@ Subcommands:
     ruuid generate <address> [<identifier>] [--type N]
     ruuid resolve  <uuid> [--registry URL] [--nameserver HOST[:PORT]]
                           [--follow [WHAT]] [--verbose]
-    ruuid document --zone FILE [--domain DOMAIN]
-    ruuid records  --zone FILE [--domain DOMAIN] [--rrtype WHAT]
-                              [--ttl N]
-    ruuid anchor   --zone FILE [--bind HOST] [--dns-port N]
-                               [--http-port N] [--https-port N]
-                               [--rrtype WHAT]
+    ruuid document [DOMAIN] [--zone FILE]
+    ruuid anchor   --zone FILE [--export [FILE]] [--bind HOST]
+                               [--dns-port N] [--http-port N]
+                               [--https-port N] [--rrtype WHAT]
     ruuid seal     <address> <domain> [--type N] [--day DATE] [--out DIR]
                                [--production] [--challenge WHAT] [--webroot DIR]
                                [--no-domain-cert] [--nameserver HOST[:PORT]]
@@ -499,30 +497,25 @@ def cmd_document(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_records(args: argparse.Namespace) -> int:
-    """Print the DNS zone records the domain should publish."""
-    from ruuid.issue import emit_records
-
-    try:
-        sys.stdout.write(
-            emit_records(
-                args.zone,
-                domain=args.domain,
-                rrtype=args.rrtype,
-                ttl=args.ttl,
-            )
-        )
-    except FileNotFoundError as e:
-        print(f"ruuid records: {e}", file=sys.stderr)
-        return 1
-    except ValueError as e:
-        print(f"ruuid records: {e}", file=sys.stderr)
-        return 1
-    return 0
-
-
 def cmd_anchor(args: argparse.Namespace) -> int:
     from ruuid.anchor import run
+
+    # --export: at startup, print the DNS zone records a real deployment would
+    # publish (to FILE, or stdout), then run the daemon.
+    if args.export is not None:
+        from ruuid.issue import emit_records
+        try:
+            records = emit_records(args.zone, rrtype=args.rrtype)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"ruuid anchor: {e}", file=sys.stderr)
+            return 1
+        if args.export:                      # a filename was given
+            Path(args.export).write_text(records)
+            print(f"ruuid anchor: wrote DNS zone records to {args.export}",
+                  file=sys.stderr)
+        else:                                # no filename -> stdout
+            sys.stdout.write(records)
+            sys.stdout.flush()
 
     try:
         return run(
@@ -980,41 +973,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     d.set_defaults(func=cmd_document)
 
-    z = sub.add_parser(
-        "records",
-        help="print the DNS zone records a domain should publish",
-        description=(
-            "Print the DNS records — PTR per anchor, URI/TXT at "
-            "_uuid.<domain> — to install at the domain's "
-            "authoritative DNS provider, in BIND-style zone format."
-        ),
-    )
-    z.add_argument(
-        "--zone", required=True,
-        help="path to the zone JSON file",
-    )
-    z.add_argument(
-        "--domain", default=None,
-        help="restrict output to records for one domain's entries "
-             "(default: emit records for all)",
-    )
-    z.add_argument(
-        "--rrtype", choices=["both", "URI", "TXT"], default="both",
-        help="restrict the records at _uuid.<domain> to URI only or "
-             "TXT only (default: both — most resolvers prefer URI and "
-             "fall back to TXT, so emitting both is the safe choice).",
-    )
-    z.add_argument(
-        "--ttl", type=int, default=3600,
-        help="TTL (seconds) in the emitted zone snippet (default: 3600)",
-    )
-    z.set_defaults(func=cmd_records)
-
     a = sub.add_parser(
         "anchor",
         help="run a daemon that serves DNS + HTTP for a JSON zone file",
     )
     a.add_argument("--zone", required=True, help="path to the zone JSON file")
+    a.add_argument(
+        "--export", nargs="?", const="", default=None, metavar="FILE",
+        help="at startup, print the DNS zone records a real deployment would "
+             "publish (PTR per anchor + URI/TXT at _uuid.<domain>, BIND-style) "
+             "to FILE, or to stdout if no FILE is given; then run the daemon.",
+    )
     a.add_argument(
         "--bind", default="127.0.0.1",
         help="address to bind on (default: 127.0.0.1). May be an IP "

@@ -29,19 +29,11 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .RB [ --zone
 .IR FILE ]
 .br
-.B ruuid records
-.B --zone
-.I FILE
-.RB [ --domain
-.IR DOMAIN ]
-.RB [ --rrtype
-.IR TYPE ]
-.RB [ --ttl
-.IR N ]
-.br
 .B ruuid anchor
 .B --zone
 .I FILE
+.RB [ --export
+.RI [ FILE ]]
 .RB [ --bind
 .IR ADDR ]
 .RB [ --dns-port
@@ -326,32 +318,26 @@ array; otherwise a domain must be given.
 .TP
 .B \-\-zone \fIFILE\fR
 Zone JSON file to read service templates from (optional).
-.SH RECORDS
-.B ruuid records --zone \fIFILE\fR [options]
-.PP
-Print the BIND-style DNS records (PTR per anchor + URI/TXT at
-.RI _uuid. <domain> )
-to install at the authoritative DNS provider.
-.TP
-.B \-\-domain \fIDOMAIN\fR
-Restrict output to records for one domain's entries (default: emit for all).
-.TP
-.B \-\-rrtype \fIboth\fR|\fIURI\fR|\fITXT\fR
-Restrict the records published at
-.RI _uuid. <domain>
-to one type (default
-.IR both ).
-.TP
-.B \-\-ttl \fIN\fR
-TTL in seconds (default 3600).
 .SH ANCHOR
 .B ruuid anchor --zone \fIFILE\fR [options]
 .PP
+.B (Non-production developer/test convenience.)
 Run a long-lived daemon that serves DNS (PTR + URI/TXT at
 .RI _uuid. <domain> ,
 UDP and TCP) and HTTP(S) (UUID documents + stub referents) for a JSON zone
-file. Default ports are 53 (DNS), 80 (HTTP), and 443 (HTTPS when a cert is
-present); the privileged defaults need root.
+file, so a developer can exercise resolution without real reverse-DNS control
+or web servers. Default ports are 53 (DNS), 80 (HTTP), and 443 (HTTPS when a
+cert is present); the privileged defaults need root.
+.TP
+.B \-\-export \fR[\fIFILE\fR]
+At startup, print the BIND-style DNS records a real deployment would publish
+(PTR per anchor + URI/TXT at
+.RI _uuid. <domain> )
+to
+.IR FILE ,
+or to stdout if no
+.I FILE
+is given; then run the daemon as usual.
 .TP
 .B \-\-bind \fIADDR\fR
 Address to bind on (default
