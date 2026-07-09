@@ -669,22 +669,16 @@ def _merge_certs(a: list[CtCert], b: list[CtCert]) -> list[CtCert]:
 
 
 def _custody_bundle(ru: RUUID, certs: list[CtCert]) -> dict:
-    day_count = _day_count(ru)
+    """The custody bundle for one RUUID's network, in the shared shape.
+
+    Same shape as `build_published_custody` — so `custody <ip>` (from CT) and
+    `custody --seals` (from the issuer's certs) emit the same `uuid-custody.json`.
+    """
     return {
-        "ruuid": str(ru),
-        "network": str(ru.ip_network),
-        "anchorIp": anchor_ip(ru),
-        "dayCount": day_count,
-        "anchorDate": _day_to_date(day_count).isoformat(),
-        "source": "crt.sh",
-        "chain": [
-            {
-                "generation": 0,
-                "role": "genesis",
-                "endorsedBy": None,
-                "certificates": [c.as_dict() for c in certs],
-            }
-        ],
+        "kind": "uuid-custody",
+        "generatedAt": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "networks": [str(ru.ip_network)],
+        "certificates": [c.as_dict() for c in certs],
     }
 
 
@@ -841,11 +835,7 @@ def verify(ru: RUUID, document: dict | None, custody: dict) -> VerifyResult:
     timeline: list[Anchoring] = []
     genesis_keys: list[str] = []
     genesis_by_key: dict[str, Anchoring] = {}
-    for cert in (custody.get("chain") or [{}])[0].get("certificates") or []:
-        try:
-            c = CtCert.from_dict(cert)   # carries pem + sctTimestampMs if present
-        except (KeyError, ValueError):
-            continue
+    for c in _bundle_certs(custody):     # flat `certificates` or legacy `chain`
         spki = c.spki_sha256
         certs.append(c)
         is_gen = _cert_is_genesis(c, ru, day_count)

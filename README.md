@@ -404,16 +404,22 @@ $ ruuid verify 002299ac-… uuid-document.json --custody custody.json   # offlin
 
 #### Published bundles: verifying without crt.sh
 
-An issuer already holds its own genesis/commitment certificates on disk (from
-`seal`/`rotate`), and those *are* the CT-logged certs — they carry their own
-SCTs. So **`custody --publish`** aggregates them into one self-contained
-`uuid-custody.json` (no CT query, no private keys — only `*-cert.pem` files
-are read) to host at a well-known URL:
+**`ruuid custody <ip>`** builds a `uuid-custody.json` from CT — runnable by
+anyone. An issuer, though, already holds its own genesis/commitment
+certificates on disk (from `seal`/`rotate`), and those *are* the CT-logged
+certs. So **`custody --seals`** builds the **same bundle** from those local
+records instead of querying CT — an issuer optimization that's immediate (no
+waiting for CT to index a just-issued cert), offline, and crt.sh-free (only
+`*-cert.pem` files are read; private keys never leave the box):
 
 ```
-$ ruuid custody --publish > uuid-custody.json      # from ~/.ruuid/seals
+$ ruuid custody --seals > uuid-custody.json        # from ~/.ruuid/seals (issuer)
+$ ruuid custody 100.57.12.254 > uuid-custody.json  # from CT (anyone)
 # serve at https://<domain>/.well-known/uuid-custody.json
 ```
+
+Same output either way — `--seals` is just the issuer's fast, CT-free path to
+producing it, which is what keeps crt.sh off the critical path for publishing.
 
 A resolver pre-downloads the `uuid-custody.json` files for the domains it
 regularly serves into a directory, and points `verify` / `resolve --verify`

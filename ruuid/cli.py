@@ -764,23 +764,26 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_custody(args: argparse.Namespace) -> int:
-    """Build a CT custody bundle (custody.json) for an RUUID (experimental).
+    """Build a custody bundle (custody.json) — from CT, or from the seals dir.
 
-    With --publish, aggregate this issuer's own on-disk certificates into a
-    single self-contained uuid-custody.json (no CT query, no RUUID needed) for
-    hosting at https://<domain>/.well-known/uuid-custody.json.
+    The output is the same either way; `--seals` is an issuer optimization that
+    reads the issuer's own certificate records instead of querying CT.
     """
     from ruuid.verify import CrtShSource, build_published_custody, gather_custody
 
-    if args.publish:
+    if args.seals is not None:
         from ruuid.seal import default_seals_dir
         seals = args.seals or str(default_seals_dir())
-        custody = build_published_custody(seals)
+        try:
+            custody = build_published_custody(seals)
+        except (OSError, ValueError) as e:
+            print(f"ruuid custody: {e}", file=sys.stderr)
+            return 1
     else:
         from ruuid.core import RUUID
         if not args.ruuid:
-            print("ruuid custody: an RUUID is required (or use --publish)",
-                  file=sys.stderr)
+            print("ruuid custody: an RUUID is required (or use --seals to build "
+                  "from the issuer's seals directory)", file=sys.stderr)
             return 1
         try:
             ru = RUUID.from_str(args.ruuid)
@@ -1231,31 +1234,29 @@ def _build_parser() -> argparse.ArgumentParser:
 
     cu = sub.add_parser(
         "custody",
-        help="(experimental) build a CT custody bundle (custody.json) for an RUUID",
+        help="(experimental) build a custody bundle (custody.json)",
         description=(
-            "Query Certificate Transparency for the certificates that establish "
-            "the RUUID's genesis — those carrying the RUUID's IP-address SAN — "
-            "and the genesis key's forward anchoring timeline, and emit a "
-            "custody.json evidence bundle. Needs only the RUUID (the genesis key "
-            "is recovered from CT by IP, not from any document). Runnable "
-            "anywhere with crt.sh access."
+            "Build a custody.json evidence bundle. By default, query Certificate "
+            "Transparency for the certificates that establish the RUUID's genesis "
+            "(those carrying its IP SAN) plus the genesis key's forward chain — "
+            "runnable anywhere with crt.sh access, needs only the RUUID (the key "
+            "is recovered from CT by IP, not from any document). With --seals, "
+            "build the SAME bundle from the issuer's own certificate records "
+            "instead of querying CT — an issuer optimization (immediate, offline, "
+            "no crt.sh). Host the result at "
+            "https://<domain>/.well-known/uuid-custody.json."
         ),
     )
     cu.add_argument(
         "ruuid", nargs="?", default=None,
-        help="RUUID in canonical text form (omit with --publish)",
+        help="RUUID in canonical text form (omit with --seals)",
     )
     cu.add_argument(
-        "--publish", action="store_true",
-        help="instead, aggregate this issuer's OWN on-disk certificates (from "
-             "the seals dir) into a self-contained uuid-custody.json to host at "
-             "https://<domain>/.well-known/uuid-custody.json — no CT query, no "
-             "RUUID needed (private keys are never included)",
-    )
-    cu.add_argument(
-        "--seals", default=None, metavar="DIR",
-        help="with --publish, the seals directory to scan "
-             "(default: ~/.ruuid/seals)",
+        "--seals", nargs="?", const="", default=None, metavar="DIR",
+        help="issuer optimization: build the bundle from the issuer's own "
+             "certificate records (the seals directory, default ~/.ruuid/seals; "
+             "pass DIR to override) instead of querying CT. Same output; no crt.sh, "
+             "no RUUID needed, immediate. Private keys are never included.",
     )
     cu.add_argument(
         "--out", default=None, metavar="FILE",

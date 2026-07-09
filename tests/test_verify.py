@@ -182,10 +182,9 @@ def test_gather_custody_shape_ip_based():
                    na="2026-10-05T00:00:00+00:00", serial="dom", cid=104,
                    spki=SPKI)
     custody = gather_custody(ru, FakeCt([GENESIS_CERT, domain]))
-    assert custody["ruuid"] == RU_STR
-    assert custody["anchorIp"] == IP
-    assert custody["dayCount"] == 553
-    certs = custody["chain"][0]["certificates"]
+    assert custody["kind"] == "uuid-custody"           # shared shape with --seals
+    assert custody["networks"] == [str(ru.ip_network)]
+    certs = custody["certificates"]
     serials = {c["serial"] for c in certs}
     assert "genesis" in serials and "dom" in serials   # genesis + forward timeline
     assert all("spkiSha256" in c for c in certs)
@@ -287,10 +286,37 @@ def test_verify_chain_fork_earliest_commitment_wins():
     assert not bad.verified                       # the fork target loses
 
 
+def test_custody_ct_and_seals_share_shape(tmp_path):
+    # `custody <ip>` (CT) and `custody --seals` (issuer certs) emit the same
+    # bundle shape, readable by the same verify() reader.
+    import subprocess
+
+    from ruuid.verify import build_published_custody
+    ru = RUUID.from_str(RU_STR)
+    ct = gather_custody(ru, FakeCt([GENESIS_CERT]))
+
+    d = tmp_path / "seals" / "x"
+    d.mkdir(parents=True)
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec",
+         "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+         "-keyout", str(d / "key.pem"), "-out", str(d / "ip-cert.pem"),
+         "-days", "7", "-subj", "/", "-addext", "subjectAltName=IP:203.0.113.5"],
+        check=True, capture_output=True,
+    )
+    seals = build_published_custody(tmp_path / "seals")
+
+    assert ct["kind"] == seals["kind"] == "uuid-custody"
+    for key in ("kind", "generatedAt", "networks", "certificates"):
+        assert key in ct and key in seals
+    # verify() reads either without special-casing the source
+    assert [c["serial"] for c in ct["certificates"]] == ["genesis"]
+
+
 def test_custody_bundle_follows_chain_forward():
     ru = RUUID.from_str(RU_STR)
     bundle = gather_custody(ru, FakeCt([GENESIS_CERT, K1_TO_K2, K2_TO_K3]))
-    serials = {c["serial"] for c in bundle["chain"][0]["certificates"]}
+    serials = {c["serial"] for c in bundle["certificates"]}
     assert {"genesis", "c1", "c2"} <= serials     # whole chain gathered from CT
 
 

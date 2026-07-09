@@ -509,6 +509,26 @@ def test_document_emits_json_to_stdout(tmp_path, capsys):
     assert doc["service"][0]["serviceEndpoint"] == "https://x.example/t/<identifier>"
 
 
+def test_custody_seals_builds_from_dir(tmp_path, capsys):
+    import json
+    import subprocess
+    d = tmp_path / "seals" / "x"
+    d.mkdir(parents=True)
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec",
+         "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+         "-keyout", str(d / "key.pem"), "-out", str(d / "ip-cert.pem"),
+         "-days", "7", "-subj", "/", "-addext", "subjectAltName=IP:203.0.113.5"],
+        check=True, capture_output=True,
+    )
+    rc = main(["custody", "--seals", str(tmp_path / "seals")])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["kind"] == "uuid-custody"
+    assert len(doc["certificates"]) == 1
+    assert "PRIVATE KEY" not in json.dumps(doc)      # no keys leaked
+
+
 def test_document_basic_without_zone(capsys):
     import json
     rc = main(["document", "new.example"])
