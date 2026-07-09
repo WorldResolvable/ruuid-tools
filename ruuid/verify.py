@@ -860,8 +860,17 @@ def coverage_groups_from_certs(certs: list[CtCert], ip: str) -> list:
 
 
 def coverage_groups_from_ct(ip: str, ct_source: CtSource) -> list:
-    """Key-grouped coverage for `ip` from CT (fetches the IP's certs + chains)."""
-    return coverage_groups_from_certs(_fetch_certs_for_ip(ip, ct_source), ip)
+    """Key-grouped coverage for `ip` from CT.
+
+    Fetches only what coverage needs: the IP's genesis certs (for the keys and
+    their windows) and each of those keys' own certs (for the domain) — NOT the
+    forward commitment chain, keeping the crt.sh fetch count bounded to the
+    number of genesis keys, not the whole custody graph."""
+    ip_certs = ct_source.certs_for_ip(ip)
+    certs = list(ip_certs)
+    for spki in {c.spki_sha256 for c in ip_certs}:
+        certs.extend(ct_source.certs_for_spki(spki))
+    return coverage_groups_from_certs(certs, ip)
 
 
 class IpCertCache:

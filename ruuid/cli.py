@@ -740,7 +740,10 @@ def _emit_coverage_groups(ip: str, groups, args: argparse.Namespace) -> int:
         print("  (no sealed coverage)")
         return 0
     for domain, spki, spans in groups:
-        print(f"\n{domain or '(unknown domain)'} {spki}")
+        if spki is None:                       # ungrouped fallback (keys unavailable)
+            print("\n(per-key grouping unavailable)")
+        else:
+            print(f"\n{domain or '(unknown domain)'} {spki}")
         for span in spans:
             print(f"  {span.start_date.isoformat()} .. {span.end_date.isoformat()}   "
                   f"day_count {span.start_day}..{span.end_day} "
@@ -755,8 +758,8 @@ def cmd_custody(args: argparse.Namespace) -> int:
     reads the issuer's own certificate records instead of querying CT.
     """
     from ruuid.verify import (
-        CrtShSource, build_published_custody, coverage_groups_from_ct,
-        gather_custody_for_ip,
+        CrtShSource, build_published_custody, coverage_from_windows,
+        coverage_groups_from_ct, gather_custody_for_ip,
     )
 
     # --summary: day-coverage (grouped by key) instead of the full bundle.
@@ -777,7 +780,20 @@ def cmd_custody(args: argparse.Namespace) -> int:
                 groups = coverage_groups(ip, seals_dir=seals,
                                          production_only=not args.include_staging)
             else:
-                groups = coverage_groups_from_ct(ip, CrtShSource())
+                # A coverage summary is best-effort, so fail fast on crt.sh
+                # rather than burning the default ~200s retry budget.
+                src = CrtShSource(retries=2, timeout=12, sleep=2)
+                try:
+                    groups = coverage_groups_from_ct(ip, src)
+                except RuntimeError:
+                    # Grouping needs each cert's key from crt.sh's per-cert PEM
+                    # endpoint (?d=), which is flaky/down. The day windows are in
+                    # the reliable JSON, so fall back to ungrouped coverage.
+                    spans = coverage_from_windows(src.ip_cert_windows(ip))
+                    groups = [(None, None, spans)] if spans else []
+                    print("note: crt.sh certificate fetch is unavailable; showing "
+                          "days without per-key grouping (use --seals for the full "
+                          "view)", file=sys.stderr)
         except (OSError, ValueError, RuntimeError) as e:
             print(f"ruuid custody: {e}", file=sys.stderr)
             return 1
