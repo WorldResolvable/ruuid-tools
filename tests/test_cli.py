@@ -521,7 +521,7 @@ def test_custody_seals_builds_from_dir(tmp_path, capsys):
          "-days", "7", "-subj", "/", "-addext", "subjectAltName=IP:203.0.113.5"],
         check=True, capture_output=True,
     )
-    rc = main(["custody", "--seals", str(tmp_path / "seals")])
+    rc = main(["custody", "--seals", "--seals-dir", str(tmp_path / "seals")])
     assert rc == 0
     doc = json.loads(capsys.readouterr().out)
     assert doc["kind"] == "uuid-custody"

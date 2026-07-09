@@ -85,7 +85,8 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .B ruuid custody
 .RI [ TARGET ]
 .RB [ --seals
-.RI [ DIR ]]
+.RB [ --seals-dir
+.IR DIR ]]
 .RB [ --summary
 .RB [ --day
 .IR DATE ]]
@@ -557,7 +558,7 @@ Path to the
 .B acme.sh
 script.
 .SH CUSTODY
-.B ruuid custody \fR[\fITARGET\fR] [\fB--seals\fR [\fIDIR\fR]] [\fB--summary\fR [\fB--day\fR \fIDATE\fR]] [options]
+.B ruuid custody \fR[\fITARGET\fR] [\fB--seals\fR [\fB--seals-dir\fR \fIDIR\fR]] [\fB--summary\fR [\fB--day\fR \fIDATE\fR]] [options]
 .PP
 .B (Experimental.)
 Build a
@@ -572,15 +573,16 @@ crt.sh access. Host the result at
 where resolvers fetch it (see
 .BR "verify --bundles" ", " "resolve --verify --bundles" ).
 .TP
-.B \-\-seals \fR[\fIDIR\fR]
-Issuer optimization: build the
-.B same
-bundle from the issuer's own certificate records \(em the
+.B \-\-seals ", " \-\-seals-dir " \fIDIR\fR"
+Issuer optimization: build the bundle (or
+.BR --summary )
+from the issuer's own certificate records \(em the
 .I *-cert.pem
 files under the seals directory (default
 .IR ~/.ruuid/seals ,
 or
-.IR DIR ,
+.B \-\-seals-dir
+.IR DIR ;
 never the private keys) \(em instead of querying CT. The output is identical;
 reading local records is immediate (no waiting for CT to index a just-issued cert),
 offline, and needs no crt.sh, which is what keeps crt.sh off the critical path for

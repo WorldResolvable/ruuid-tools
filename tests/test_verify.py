@@ -323,6 +323,29 @@ def test_gather_custody_for_ip_shape():
     assert [c["serial"] for c in b["certificates"]] == ["genesis"]
 
 
+def test_ip_cert_windows_uses_json_not_pem(monkeypatch):
+    from ruuid.verify import CrtShSource, coverage_from_windows
+    src = CrtShSource()
+    entries = [
+        {"serial_number": "aa", "name_value": "100.57.12.254",
+         "not_before": "2026-07-07T00:00:00", "not_after": "2026-07-14T00:00:00"},
+        {"serial_number": "aa", "name_value": "100.57.12.254",   # precert dup
+         "not_before": "2026-07-07T00:00:00", "not_after": "2026-07-14T00:00:00"},
+        {"serial_number": "bb", "name_value": "other.example",   # not the IP
+         "not_before": "2026-07-07T00:00:00", "not_after": "2026-07-14T00:00:00"},
+    ]
+    calls = {"pem": 0}
+    monkeypatch.setattr(src, "_get", lambda url, **k: entries)   # JSON only
+    monkeypatch.setattr(
+        src, "_parse_cert",
+        lambda *a, **k: calls.__setitem__("pem", calls["pem"] + 1),
+    )
+    windows = src.ip_cert_windows(IP)
+    assert len(windows) == 1                       # deduped + IP-filtered
+    assert calls["pem"] == 0                        # no per-cert PEM fetch
+    assert coverage_from_windows(windows)[0].start_date.isoformat() == "2026-07-07"
+
+
 def test_coverage_from_certs_merges_and_filters():
     from ruuid.verify import coverage_from_certs
     a = _cert(ip_sans=(IP,), nb="2026-07-07T00:00:00+00:00",

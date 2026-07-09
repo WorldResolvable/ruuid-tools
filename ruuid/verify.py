@@ -209,6 +209,34 @@ class CrtShSource:
     def certs_for_ip(self, ip: str) -> list[CtCert]:
         return self._certs(self._get(self._IP_URL.format(ip=ip), as_json=True))
 
+    def ip_cert_windows(self, ip: str) -> list[tuple]:
+        """`(not_before, not_after, serial)` for certs carrying `ip`, straight
+        from the crt.sh JSON — no per-certificate PEM fetch (the flaky `?d=`
+        endpoint). The JSON already carries the validity window and SANs, which
+        is all a day-coverage summary needs."""
+        entries = self._get(self._IP_URL.format(ip=ip), as_json=True)
+        seen: set[str] = set()
+        out: list[tuple] = []
+        for e in entries:
+            names = [n.strip() for n in (e.get("name_value") or "").splitlines()]
+            if ip not in names:
+                continue
+            serial = e.get("serial_number", "")
+            if serial in seen:            # precert + final share a serial
+                continue
+            seen.add(serial)
+            try:
+                nb = _dt.datetime.fromisoformat(e["not_before"])
+                na = _dt.datetime.fromisoformat(e["not_after"])
+            except (KeyError, ValueError):
+                continue
+            if nb.tzinfo is None:
+                nb = nb.replace(tzinfo=_dt.timezone.utc)
+            if na.tzinfo is None:
+                na = na.replace(tzinfo=_dt.timezone.utc)
+            out.append((nb, na, serial[:12]))
+        return out
+
     def certs_for_spki(self, spki_sha256: str) -> list[CtCert]:
         return self._certs(
             self._get(self._SPKI_URL.format(spki=spki_sha256), as_json=True)
@@ -788,15 +816,21 @@ def gather_custody_for_ip(
     }
 
 
+def coverage_from_windows(windows: list[tuple]) -> list:
+    """Merge `(not_before, not_after, label)` datetime windows into day spans."""
+    from ruuid.seal import merge_day_intervals
+    return merge_day_intervals(
+        [(days_since_epoch(nb), days_since_epoch(na), label)
+         for nb, na, label in windows]
+    )
+
+
 def coverage_from_certs(certs: list[CtCert], ip: str) -> list:
     """Merged issue-day spans `ip` has provable genesis coverage for, from the
     validity windows of its IP-SAN certificates in `certs`."""
-    from ruuid.seal import merge_day_intervals
-    intervals = [
-        (days_since_epoch(c.not_before), days_since_epoch(c.not_after), c.serial)
-        for c in certs if ip in c.ip_sans           # IP-SAN genesis certs only
-    ]
-    return merge_day_intervals(intervals)
+    return coverage_from_windows(
+        [(c.not_before, c.not_after, c.serial) for c in certs if ip in c.ip_sans]
+    )
 
 
 class IpCertCache:

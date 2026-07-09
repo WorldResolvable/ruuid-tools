@@ -22,7 +22,7 @@ Subcommands:
                                [--production] [--challenge WHAT] [--webroot DIR]
                                [--no-domain-cert] [--nameserver HOST[:PORT]]
                                [--acme PATH]
-    ruuid custody  [TARGET] [--seals [DIR]] [--summary [--day DATE]] [--out FILE]
+    ruuid custody  [TARGET] [--seals [--seals-dir DIR]] [--summary [--day DATE]]
 
 Resolve has five output modes:
   - default: the UUID-document URI on one line (pipeable into curl).
@@ -750,7 +750,7 @@ def cmd_custody(args: argparse.Namespace) -> int:
     reads the issuer's own certificate records instead of querying CT.
     """
     from ruuid.verify import (
-        CrtShSource, build_published_custody, coverage_from_certs,
+        CrtShSource, build_published_custody, coverage_from_windows,
         gather_custody_for_ip,
     )
 
@@ -766,22 +766,24 @@ def cmd_custody(args: argparse.Namespace) -> int:
             print(f"ruuid custody: {e}", file=sys.stderr)
             return 1
         try:
-            if args.seals is not None:
+            if args.seals:
                 from ruuid.seal import default_seals_dir, ip_coverage
-                seals = args.seals or str(default_seals_dir())
+                seals = args.seals_dir or str(default_seals_dir())
                 spans = ip_coverage(ip, seals_dir=seals,
                                     production_only=not args.include_staging)
             else:
-                spans = coverage_from_certs(CrtShSource().certs_for_ip(ip), ip)
+                # Coverage needs only validity windows, which are in the crt.sh
+                # JSON — no per-cert PEM fetch (avoids the flaky ?d= endpoint).
+                spans = coverage_from_windows(CrtShSource().ip_cert_windows(ip))
         except (OSError, ValueError, RuntimeError) as e:
             print(f"ruuid custody: {e}", file=sys.stderr)
             return 1
         return _emit_coverage(ip, spans, args)
 
     # Full bundle.
-    if args.seals is not None:
+    if args.seals:
         from ruuid.seal import default_seals_dir
-        seals = args.seals or str(default_seals_dir())
+        seals = args.seals_dir or str(default_seals_dir())
         try:
             custody = build_published_custody(seals)
         except (OSError, ValueError) as e:
@@ -1205,11 +1207,14 @@ def _build_parser() -> argparse.ArgumentParser:
              "whole-issuer bundle)",
     )
     cu.add_argument(
-        "--seals", nargs="?", const="", default=None, metavar="DIR",
-        help="issuer optimization: build from the issuer's own certificate "
-             "records (the seals directory, default ~/.ruuid/seals; pass DIR to "
-             "override) instead of querying CT. Same output; no crt.sh, immediate. "
-             "Private keys are never included.",
+        "--seals", action="store_true",
+        help="issuer optimization: build (or --summary) from the issuer's own "
+             "certificate records instead of querying CT. Same output; no crt.sh, "
+             "immediate. Private keys are never included.",
+    )
+    cu.add_argument(
+        "--seals-dir", default=None, metavar="DIR",
+        help="with --seals, the seals directory to read (default: ~/.ruuid/seals)",
     )
     cu.add_argument(
         "--summary", action="store_true",
