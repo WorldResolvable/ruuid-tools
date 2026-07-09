@@ -74,6 +74,7 @@ from ruuid.generate import (
     days_since_epoch,
     new_ruuid,
 )
+from ruuid.proof import sign_document
 from ruuid.resolve import DnsTransport, reverse_name_for_ip, to_ip
 
 
@@ -782,6 +783,9 @@ def seal(
 
         jwk = _ec_public_jwk(openssl, key_path, kid=key_id)
         document = _build_document(ru, jwk=jwk)
+        # Sign the document with the genesis key so its content is bound to the
+        # committed key (self-authenticating, transport-independent).
+        document = sign_document(document, key_path, created=verified_at)
 
         # 5-6. Persist everything into the final directory.
         if out_dir is None:
@@ -1040,6 +1044,11 @@ def rotate(
 
         jwk = _ec_public_jwk(openssl, active_key, kid=active_spki)
         document = _build_document(ru, jwk=jwk)
+        # Sign the new document with the now-active (rotated-in) key.
+        document = sign_document(
+            document, active_key,
+            created=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+        )
 
         if out_dir is None:
             final = default_seals_dir() / ruuid / f"gen{generation}"

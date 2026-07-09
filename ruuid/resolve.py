@@ -60,6 +60,7 @@ import dns.rdatatype
 import dns.resolver
 
 from ruuid.core import RUUID
+from ruuid.proof import verify_document_proof
 import ruuid.did  # noqa: F401 — side effect: installs the did:web urllib handler
 
 
@@ -956,6 +957,19 @@ def resolve_ruuid(
             return result
 
         document = _parse_doc(doc_body)
+        # Content-integrity policy: a document that IS signed but whose proof is
+        # invalid must not drive resolution through a document-supplied
+        # (non-default) referent template — its content can't be trusted. An
+        # unsigned document (no proof) is accepted (plain resolve does not
+        # authenticate); a valid proof is fine; and the spec-default template is
+        # derived from the RUUID + domain, not the document, so it's unaffected.
+        if document is not None:
+            entry, _tmpl = _select_service_entry(document, ruuid.type_id)
+            if entry is not None and verify_document_proof(document) is False:
+                raise ResolveError(
+                    "UUID document proof is invalid and resolution would use a "
+                    "document-supplied (non-default) referent template — refusing"
+                )
         result["ruuid_document"] = synthesise_ruuid_document(
             ruuid, document,
             domain=result["domain"],

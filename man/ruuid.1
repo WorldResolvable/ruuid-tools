@@ -225,11 +225,19 @@ referent body.
 .B \-\-verify
 .RB "(Experimental.)" " Fold the"
 .B verify
-check into resolution: fetch the candidate UUID document via the PTR path, then
-confirm its committed key is the Certificate-Transparency genesis key for the
-RUUID's IP and day. A document whose key is not the genesis key is rejected (exit
-non-zero) \(em so a party who acquired a released IP cannot hijack an old RUUID.
-If the document asserts a
+check into resolution: fetch the candidate UUID document via the PTR path,
+require a valid document
+.B proof
+(the document must be signed by the key it commits), then confirm that committed
+key is the Certificate-Transparency genesis key (or a chain successor) for the
+RUUID's IP and day. A document that is unsigned, whose proof is invalid, or whose
+key is not authorised is rejected (exit non-zero) \(em so a party who acquired a
+released IP cannot hijack an old RUUID, even by wrapping the genuine public key
+around forged content. (Plain
+.B resolve
+accepts an unsigned document, but refuses an invalidly-signed one when resolution
+would use a document-supplied, non-default referent template.) If the document
+asserts a
 .I mintingDayRange
 that excludes the RUUID, the disclaim is flagged as an honest successor (route to
 the genuine controller, the key CT names) rather than an impostor. Overrides the

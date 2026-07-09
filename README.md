@@ -485,15 +485,38 @@ unaffected. Requires `pip install 'ruuid[sct]'`.
 $ ruuid verify <uuid> uuid-document.json --bundles ./bundles/ --verify-scts
 ```
 
+#### Signed documents: binding content to the key
+
+Committing a key isn't enough on its own — a public key is *public*, so an
+attacker could wrap the genuine key around a malicious document (a hostile
+referent template). So `seal` and `rotate` **sign** the document with the key
+it commits (a W3C Data-Integrity `proof`, ECDSA-P256 over the canonicalized
+document), making it **self-authenticating**: its content is bound to the key,
+independent of how it was fetched. The policy:
+
+- **`resolve --verify` requires a signed document** — the proof must be present
+  and valid (in addition to the CT/chain check on the committed key).
+- **Plain `resolve` accepts an unsigned document** (it does not authenticate) —
+  *but* if a document carries a proof that is **invalid**, `resolve` refuses
+  when resolution would use a **document-supplied (non-default) referent
+  template**, since that tampered content can't be trusted. The spec-default
+  template (derived from the RUUID + domain, not the document) is unaffected.
+
+Verifying the proof reconstructs the committed key from the document's own
+`verificationMethod` and checks the signature with openssl — no CT lookup and
+no `cryptography` dependency. (Documents sealed before this feature carry no
+proof, so `resolve --verify` will report them unsigned until re-sealed.)
+
 #### Commandeering-safe resolution: `resolve --verify`
 
 Plain `resolve` follows the PTR to whatever document the current IP holder
 serves — fast, but it trusts that holder. `resolve --verify` folds the CT
-check into resolution: it fetches the candidate document via PTR, then
-confirms its committed key is the CT-established genesis key for the RUUID's
-IP and day. A document whose key isn't the genesis key is rejected (exit
-non-zero) — so a party who acquired the released IP can't hijack an old
-RUUID.
+check into resolution: it fetches the candidate document via PTR, requires a
+valid document **proof** (above), then confirms its committed key is the
+CT-established genesis key (or a chain successor) for the RUUID's IP and day. A
+document whose key isn't authorized — or whose content isn't signed by it — is
+rejected (exit non-zero), so a party who acquired the released IP can't hijack
+an old RUUID.
 
 ```
 $ ruuid resolve --verify 002299ac-52e1-8200-8002-64390cfe0000

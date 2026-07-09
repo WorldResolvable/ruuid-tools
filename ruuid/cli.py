@@ -151,6 +151,21 @@ def _cmd_resolve_verify(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    # --verify requires a SIGNED document: its content must be bound to the
+    # committed key by a valid proof (else the committed key could be wrapped
+    # around content the key-holder never authored).
+    from ruuid.proof import verify_document_proof
+    proof_ok = verify_document_proof(document)
+    if proof_ok is None:
+        print("verification: NOT VERIFIED — the UUID document is not signed "
+              "(no proof); --verify requires a signed document", file=sys.stderr)
+        return 1
+    if proof_ok is False:
+        print("verification: NOT VERIFIED — the UUID document's proof is "
+              "invalid (content does not match its committed key)",
+              file=sys.stderr)
+        return 1
+
     day_count = ru.identifier >> 28
     disclaimed = document_disclaims(document, day_count)
     bundle_source = _ct_source(args)

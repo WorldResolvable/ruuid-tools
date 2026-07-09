@@ -182,6 +182,18 @@ def test_seal_document_commits_only_the_key(ptr_ns, tmp_path):
     assert on_disk == doc
 
 
+def test_seal_document_is_signed(ptr_ns, tmp_path):
+    from ruuid.proof import verify_document_proof
+    result = seal(
+        IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
+        acme_runner=FakeAcme(), challenge="http-01",
+    )
+    assert "proof" in result.document                 # signed by the genesis key
+    assert verify_document_proof(result.document) is True
+    on_disk = json.loads((tmp_path / "s" / "uuid-document.json").read_text())
+    assert verify_document_proof(on_disk) is True
+
+
 def test_seal_manifest_wellformed(ptr_ns, tmp_path):
     result = seal(
         IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
@@ -396,8 +408,10 @@ def test_rotate_activates_pinned_successor(ptr_ns, tmp_path):
     k3 = rot.next_key_spki
     assert k3 not in (k1, k2)
 
-    # new document commits the now-active key K2
+    # new document commits the now-active key K2, and is signed by it
     assert rot.document["verificationMethod"][0]["publicKeyJwk"]["kid"] == k2
+    from ruuid.proof import verify_document_proof
+    assert verify_document_proof(rot.document) is True
     # the new commitment (under K2) decodes to the fresh cold K3
     assert spki_from_commitment_label(rot.commitment_name.split(".")[0]) == k3
 
