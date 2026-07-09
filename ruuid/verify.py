@@ -668,14 +668,17 @@ def _merge_certs(a: list[CtCert], b: list[CtCert]) -> list[CtCert]:
     return sorted(by_serial.values(), key=lambda c: c.not_before)
 
 
-def _custody_bundle(ru: RUUID, certs: list[CtCert]) -> dict:
+def _custody_bundle(ru: RUUID, certs: list[CtCert], *, source: str = "crt.sh") -> dict:
     """The custody bundle for one RUUID's network, in the shared shape.
 
     Same shape as `build_published_custody` — so `custody <ip>` (from CT) and
     `custody --seals` (from the issuer's certs) emit the same `uuid-custody.json`.
+    `source` is advisory metadata (how it was produced), never a trust input:
+    trust comes from your own context or from SCT-verifying the certificates.
     """
     return {
         "kind": "uuid-custody",
+        "source": source,
         "generatedAt": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "networks": [str(ru.ip_network)],
         "certificates": [c.as_dict() for c in certs],
@@ -724,6 +727,7 @@ def build_published_custody(seals_dir: Path | str) -> dict:
     certs = sorted(by_serial.values(), key=lambda c: c.not_before)
     return {
         "kind": "uuid-custody",
+        "source": "seals",              # advisory metadata (see _custody_bundle)
         "generatedAt": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "domains": sorted(domains),
         "networks": sorted(networks),

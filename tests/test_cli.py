@@ -525,6 +525,7 @@ def test_custody_seals_builds_from_dir(tmp_path, capsys):
     assert rc == 0
     doc = json.loads(capsys.readouterr().out)
     assert doc["kind"] == "uuid-custody"
+    assert doc["source"] == "seals"                  # advisory provenance
     assert len(doc["certificates"]) == 1
     assert "PRIVATE KEY" not in json.dumps(doc)      # no keys leaked
 

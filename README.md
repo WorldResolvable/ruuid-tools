@@ -420,6 +420,11 @@ $ ruuid custody 100.57.12.254 > uuid-custody.json  # from CT (anyone)
 
 Same output either way — `--seals` is just the issuer's fast, CT-free path to
 producing it, which is what keeps crt.sh off the critical path for publishing.
+The bundle records a `"source"` field (`"crt.sh"` or `"seals"`) as **advisory
+metadata** — "how was this made" for a reader — never a trust input: a bundle
+you didn't make yourself is trusted by SCT-verifying its certificates
+(`--verify-scts`), which is provenance-independent, not by believing a `source`
+label that a forger could set to anything.
 
 A resolver pre-downloads the `uuid-custody.json` files for the domains it
 regularly serves into a directory, and points `verify` / `resolve --verify`

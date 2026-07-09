@@ -183,6 +183,7 @@ def test_gather_custody_shape_ip_based():
                    spki=SPKI)
     custody = gather_custody(ru, FakeCt([GENESIS_CERT, domain]))
     assert custody["kind"] == "uuid-custody"           # shared shape with --seals
+    assert custody["source"] == "crt.sh"               # advisory provenance
     assert custody["networks"] == [str(ru.ip_network)]
     certs = custody["certificates"]
     serials = {c["serial"] for c in certs}
@@ -307,7 +308,8 @@ def test_custody_ct_and_seals_share_shape(tmp_path):
     seals = build_published_custody(tmp_path / "seals")
 
     assert ct["kind"] == seals["kind"] == "uuid-custody"
-    for key in ("kind", "generatedAt", "networks", "certificates"):
+    assert ct["source"] == "crt.sh" and seals["source"] == "seals"
+    for key in ("kind", "source", "generatedAt", "networks", "certificates"):
         assert key in ct and key in seals
     # verify() reads either without special-casing the source
     assert [c["serial"] for c in ct["certificates"]] == ["genesis"]
