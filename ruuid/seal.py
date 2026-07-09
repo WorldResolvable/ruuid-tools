@@ -94,6 +94,22 @@ SHORTLIVED_PROFILE = "shortlived"
 CHALLENGE_HTTP01 = "http-01"
 CHALLENGE_TLS_ALPN01 = "tls-alpn-01"
 
+# Certificate Transparency custody namespace. `custody.<domain>` is the
+# reserved parent under which every CT-anchored custody record for the domain
+# is published: the bare name is co-listed on the domain cert as a
+# participation marker, and command certs (key-rotation commitments, future
+# types) live beneath it (`<...>.<command>.custody.<domain>`). One wildcard
+# `*.custody.<domain>` validates the whole subtree; a monitor filters CT on
+# the `custody.<domain>` suffix. The name is the mechanism (a custody chain
+# over CT), not the identifier scheme, so it is UUID-independent. Advisory
+# only — a discovery aid, never a trust input.
+CT_MARKER_LABEL = "custody"
+
+
+def marker_name(domain: str, *, label: str = CT_MARKER_LABEL) -> str:
+    """The CT participation-marker dNSName for `domain` (`<label>.<domain>`)."""
+    return f"{label}.{domain}"
+
 
 # --- data types ---------------------------------------------------------
 
@@ -192,6 +208,7 @@ class SealResult:
     document: dict
     manifest: dict
     next_key: dict | None = None   # pre-rotation: {spkiSha256, commitmentName, ...}
+    ct_marker: str | None = None   # CT participation marker dNSName, if co-listed
 
 
 # --- openssl plumbing ---------------------------------------------------
@@ -308,6 +325,18 @@ def _ec_public_jwk(openssl: str, key_path: Path, *, kid: str) -> dict:
         "y": _b64u(y),
         "kid": kid,
     }
+
+
+def _cert_sans(openssl: str, cert_path: Path) -> list[str]:
+    """Subject Alternative Name values (DNS names and IPs) of a certificate."""
+    try:
+        text = _run([
+            openssl, "x509", "-in", str(cert_path), "-noout",
+            "-ext", "subjectAltName",
+        ]).decode()
+    except RuntimeError:
+        return []
+    return [m.group(1) for m in re.finditer(r"(?:DNS|IP Address):\s*([^,\s]+)", text)]
 
 
 def _parse_openssl_time(value: str) -> _dt.datetime:
@@ -658,6 +687,8 @@ def seal(
     challenge: str = "auto",
     webroot: str | None = None,
     domain_cert: bool = True,
+    ct_marker: bool = False,
+    ct_marker_label: str = CT_MARKER_LABEL,
     pre_rotate: bool = False,
     commit_host: str | None = None,
     nameserver: str | None = None,
@@ -673,6 +704,13 @@ def seal(
     and a `seal.json` manifest into `out_dir` (default
     `~/.ruuid/seals/<uuid>/`).
 
+    When `ct_marker` is set, the CT participation marker `<ct_marker_label>.
+    <domain>` (default `uuid.<domain>`) is co-listed as a second dNSName on
+    the domain certificate, so RUUID-participating certs are discoverable in
+    CT by domain. It requires the domain cert and that the marker name be
+    challenge-satisfiable (DNS-01, or pointed at the domain endpoint). The
+    marker is advisory — a discovery aid, never a trust input.
+
     Raises:
         ValueError: the address is unresolvable, the PTR does not map the
             address to `domain`, or `--day` falls outside the cert window.
@@ -686,6 +724,16 @@ def seal(
     # Webroot always uses HTTP-01 (the running web server serves the token);
     # it takes precedence over --challenge and skips the standalone port probe.
     chosen_challenge = CHALLENGE_HTTP01 if webroot else _select_challenge(challenge)
+
+    # CT participation marker: an OPTIONAL dNSName co-listed on the domain
+    # cert so RUUID-participating certs are discoverable in CT by domain. It
+    # rides on the domain certificate, so it needs one.
+    marker = marker_name(domain, label=ct_marker_label) if ct_marker else None
+    if marker and not domain_cert:
+        raise ValueError(
+            "--ct-marker needs the domain certificate; drop --no-domain-cert. "
+            f"The marker {marker} is co-listed on the domain cert's SANs."
+        )
 
     # 1. PTR — reverse zone maps the IP to the domain, right now.
     ptr_name, ptr_targets = _verify_ptr(ip, domain, nameserver=nameserver)
@@ -718,9 +766,14 @@ def seal(
         domain_cert_path: Path | None = None
         if domain_cert:
             domain_csr = tmpd / "domain.csr"
-            _openssl_csr(
-                openssl, key_path, domain_csr, san=f"DNS:{domain}", cn=domain
-            )
+            # Co-list the CT marker as a second dNSName when requested. acme.sh
+            # (signcsr) reads all identifiers from the CSR and validates each,
+            # so the issuer must be able to satisfy a challenge for the marker
+            # name too (DNS-01, or point it at the domain endpoint).
+            san = f"DNS:{domain}"
+            if marker:
+                san += f",DNS:{marker}"
+            _openssl_csr(openssl, key_path, domain_csr, san=san, cn=domain)
             domain_cert_path = tmpd / "domain-cert.pem"
             acme_runner(AcmeRequest(
                 mode="signcsr", key_path=key_path, csr_path=domain_csr,
@@ -731,6 +784,15 @@ def seal(
             domain_info = _cert_info(
                 openssl, domain_cert_path, kind="domain", identifier=domain
             )
+            if marker:
+                # Fail loudly if the CA dropped the marker SAN — otherwise the
+                # seal would silently claim a marker the cert doesn't carry.
+                sans = {s.lower() for s in _cert_sans(openssl, domain_cert_path)}
+                if marker.lower() not in sans:
+                    raise RuntimeError(
+                        f"CT marker {marker} was requested but is absent from "
+                        f"the issued domain certificate's SANs ({sorted(sans)})"
+                    )
             # Both certs must carry the one genesis key (that is what links
             # them in CT under a single SPKI hash).
             if domain_info.spki_sha256 != ip_info.spki_sha256:
@@ -753,7 +815,7 @@ def seal(
         commit_cert_path: Path | None = None
         if pre_rotate:
             next_key_path = tmpd / "next-key.pem"
-            host = commit_host or f"rotate.{domain}"
+            host = commit_host or f"rotate.custody.{domain}"
             k2_spki, commit_name, commit_csr, commit_cert_path, commit_info = \
                 _publish_commitment(
                     openssl, acme_runner, signing_key_path=key_path,
@@ -841,6 +903,7 @@ def seal(
         "dayCount": day_count,
         "typeId": type_id,
         "spkiSha256": key_id,
+        "ctMarker": marker,
         "ptr": {"name": ptr_name, "targets": ptr_targets},
         "ipCertificate": ip_info.as_dict(include_path=True),
         "domainCertificate": (
@@ -879,7 +942,7 @@ def seal(
         spki_sha256=key_id, ptr_name=ptr_name,
         ptr_targets=ptr_targets, ip_cert=ip_info, domain_cert=domain_info,
         out_dir=final, document=document, manifest=manifest,
-        next_key=manifest["nextKey"],
+        next_key=manifest["nextKey"], ct_marker=marker,
     )
 
 
@@ -931,6 +994,8 @@ def render_report(result: SealResult) -> str:
         )
     else:
         lines.append("domain cert:       (skipped)")
+    if result.ct_marker:
+        lines.append(f"ct marker:         {result.ct_marker}  (discovery aid)")
     if result.next_key:
         nk = result.next_key
         lines.append(f"pre-rotation:      next key (cold) SPKI {nk['spkiSha256']}")
@@ -1025,7 +1090,7 @@ def rotate(
     if acme_runner is None:
         resolved = _resolve_acme(acme_path)
         acme_runner = lambda req: _run_acme_sh(req, acme_path=resolved)  # noqa: E731
-    host = commit_host or f"rotate.{domain}"
+    host = commit_host or f"rotate.custody.{domain}"
 
     with tempfile.TemporaryDirectory(prefix="ruuid-rotate-") as tmp:
         tmpd = Path(tmp)

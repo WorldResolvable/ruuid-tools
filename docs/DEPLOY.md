@@ -15,8 +15,8 @@ repository can't hold on its own.
 An issuer host controls an **IP** and a **domain**, and:
 
 1. gets Let's Encrypt certificates for the IP (genesis) and for
-   `k<base32>.rotate.<domain>` commitment names (pre-rotation), which land in
-   Certificate Transparency;
+   `k<base32>.rotate.custody.<domain>` commitment names (pre-rotation), which
+   land in Certificate Transparency;
 2. serves, over HTTPS at the domain:
    - `/.well-known/uuid-custody.json` — its published custody bundle (what the
      discovery cascade fetches);
@@ -38,11 +38,16 @@ These aren't scriptable from the repo; set them up first.
      On AWS, set it on the Elastic IP (EC2 console → *Elastic IPs* → *reverse
      DNS*, or `aws ec2 modify-address-attribute`); it requires the matching
      forward `A` record to already exist.
-   - **Wildcard commitment record** — `*.rotate.<domain>` → the host. A CNAME
-     to the apex works well: `*.rotate.<domain>. CNAME <domain>.` (or a
-     wildcard `A` to the IP). This lets Let's Encrypt validate the per-key
-     commitment names `k<base32>.rotate.<domain>` that `--pre-rotate`/`rotate`
-     issue.
+   - **Custody namespace records** — `custody.<domain>` is the reserved parent
+     for all CT custody names. Two records, both pointing at the host, cover it:
+     - `*.custody.<domain>. CNAME <domain>.` — the wildcard. Validates every
+       command name at any depth (the per-key commitment names
+       `k<base32>.rotate.custody.<domain>` that `--pre-rotate`/`rotate` issue,
+       and any future command type). One record covers the whole subtree.
+     - `custody.<domain>. CNAME <domain>.` — the bare marker (used by
+       `seal --ct-marker`). The wildcard does **not** cover its own parent, so
+       this needs its own record.
+     A wildcard `A` to the IP works in place of the CNAMEs.
 3. **`acme.sh`** (the ACME client) — installed for the user that runs `ruuid`.
    `deploy/setup-host.sh` installs it if missing.
 4. **A web server** (nginx assumed here) — `deploy/nginx-ruuid.conf.example`.
@@ -59,7 +64,7 @@ pip install -e .            # provides the `ruuid` command
 
 Use `deploy/nginx-ruuid.conf.example` as the template. The one non-obvious
 piece is the **catch-all `:80` server** that serves `/.well-known/acme-challenge/`
-for *any* Host — commitment names like `k<base32>.rotate.<domain>` don't match
+for *any* Host — commitment names like `k<base32>.rotate.custody.<domain>` don't match
 your `<domain>` server block, so without the catch-all their ACME validation
 fails. `deploy/setup-host.sh` installs the config and creates the webroot:
 
@@ -77,7 +82,7 @@ RUUID_DOMAIN=uuid.zone deploy/preflight.sh
 ```
 
 Confirms the `A` record, that the PTR points back to the domain, that
-`*.rotate.<domain>` resolves to the IP, that the `:80` challenge path is
+`custody.<domain>` and `*.custody.<domain>` resolve to the IP, that the `:80` challenge path is
 reachable (for both the domain and a wildcard host), and that `ruuid` /
 `openssl` / `acme.sh` are present. Fix any `FAIL` before sealing.
 

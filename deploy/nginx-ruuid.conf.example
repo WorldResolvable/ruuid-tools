@@ -2,7 +2,7 @@
 #
 # It serves the three things an issuer needs over HTTP(S):
 #   1. ACME HTTP-01 challenges (for `ruuid seal` / `rotate --webroot`),
-#      including for the wildcard commitment names k<base32>.rotate.<domain>;
+#      including for the wildcard commitment names k<base32>.rotate.custody.<domain>;
 #   2. the published custody bundle  (/.well-known/uuid-custody.json);
 #   3. the UUID document             (/.well-known/uuid-document.json).
 #
@@ -13,7 +13,7 @@
 # --- Catch-all on :80 -------------------------------------------------------
 # Answers ACME HTTP-01 for ANY Host. This is the non-obvious but essential
 # block: `seal --pre-rotate` and `rotate` validate certificates for names like
-# k<base32>.rotate.<domain>, whose Host header does NOT match the <domain>
+# k<base32>.rotate.custody.<domain>, whose Host header does NOT match the <domain>
 # server below, so they land here. Without a catch-all that serves the
 # challenge path, commitment issuance fails.
 server {

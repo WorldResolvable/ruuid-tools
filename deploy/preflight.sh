@@ -8,12 +8,12 @@ set -uo pipefail
 
 DOMAIN="${RUUID_DOMAIN:?set RUUID_DOMAIN=your.domain}"
 IP="${RUUID_IP:-$(dig +short "$DOMAIN" A | head -1)}"
-COMMIT_HOST="${RUUID_COMMIT_HOST:-rotate.$DOMAIN}"
+CUSTODY_HOST="custody.$DOMAIN"
 fail=0
 ok()   { printf '  ok:   %s\n' "$1"; }
 bad()  { printf '  FAIL: %s\n' "$1"; fail=1; }
 
-printf 'domain=%s ip=%s commit-host=%s\n\n== DNS ==\n' "$DOMAIN" "$IP" "$COMMIT_HOST"
+printf 'domain=%s ip=%s custody=%s\n\n== DNS ==\n' "$DOMAIN" "$IP" "$CUSTODY_HOST"
 
 [ -n "$IP" ] && ok "A record $DOMAIN -> $IP" || bad "A record for $DOMAIN (set RUUID_IP)"
 
@@ -22,10 +22,19 @@ ptr="$(dig +short -x "$IP" 2>/dev/null | head -1)"
     && ok "PTR $IP -> $DOMAIN" \
     || bad "PTR $IP -> '$ptr' (want $DOMAIN; set reverse DNS on the IP)"
 
-wc_ip="$(dig +short "ruuid-preflight.$COMMIT_HOST" 2>/dev/null | tail -1)"
+# Bare marker: needs its OWN record — the wildcard below does NOT cover its
+# own parent (used by `seal --ct-marker`).
+mk_ip="$(dig +short "$CUSTODY_HOST" 2>/dev/null | tail -1)"
+[ "$mk_ip" = "$IP" ] \
+    && ok "custody marker $CUSTODY_HOST -> $IP" \
+    || bad "custody marker $CUSTODY_HOST resolves to '$mk_ip' (want $IP; add $CUSTODY_HOST. CNAME $DOMAIN.)"
+
+# Wildcard: covers every custody command name at any depth
+# (k<base32>.rotate.custody.<domain>, future types).
+wc_ip="$(dig +short "ruuid-preflight.$CUSTODY_HOST" 2>/dev/null | tail -1)"
 [ "$wc_ip" = "$IP" ] \
-    && ok "wildcard *.$COMMIT_HOST -> $IP" \
-    || bad "wildcard *.$COMMIT_HOST resolves to '$wc_ip' (want $IP; add *.$COMMIT_HOST)"
+    && ok "wildcard *.$CUSTODY_HOST -> $IP" \
+    || bad "wildcard *.$CUSTODY_HOST resolves to '$wc_ip' (want $IP; add *.$CUSTODY_HOST)"
 
 printf '\n== reachability ==\n'
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
@@ -35,10 +44,10 @@ code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
     || bad "port 80 challenge path not reachable for $DOMAIN"
 
 wcode="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-        "http://ruuid-preflight.$COMMIT_HOST/.well-known/acme-challenge/x" 2>/dev/null)"
+        "http://ruuid-preflight.$CUSTODY_HOST/.well-known/acme-challenge/x" 2>/dev/null)"
 [ -n "$wcode" ] && [ "$wcode" != "000" ] \
-    && ok "port 80 challenge path reachable for *.$COMMIT_HOST (HTTP $wcode)" \
-    || bad "port 80 challenge path not reachable for *.$COMMIT_HOST (catch-all server?)"
+    && ok "port 80 challenge path reachable for *.$CUSTODY_HOST (HTTP $wcode)" \
+    || bad "port 80 challenge path not reachable for *.$CUSTODY_HOST (catch-all server?)"
 
 printf '\n== tooling ==\n'
 command -v ruuid >/dev/null && ok "ruuid on PATH" || bad "ruuid not on PATH (pip install -e .)"

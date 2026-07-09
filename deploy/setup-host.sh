@@ -2,7 +2,7 @@
 #
 # Provision an RUUID issuer host: acme.sh + webroot/.well-known + nginx config.
 # Idempotent-ish and safe to re-run. The cloud-level prerequisites (a static
-# public IP, reverse DNS / PTR, and the *.rotate.<domain> wildcard record) are
+# public IP, reverse DNS / PTR, and the *.custody.<domain> wildcard record) are
 # NOT scriptable here — see docs/DEPLOY.md, and run deploy/preflight.sh to
 # check them before sealing.
 #

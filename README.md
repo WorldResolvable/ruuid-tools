@@ -151,7 +151,7 @@ touch system trust.
 
 > **Running your own issuer host?** See **[docs/DEPLOY.md](docs/DEPLOY.md)**
 > and the `deploy/` scripts for the full recipe — DNS (incl. the reverse-DNS
-> and `*.rotate.<domain>` wildcard), nginx (incl. the catch-all ACME server),
+> and `*.custody.<domain>` wildcard), nginx (incl. the catch-all ACME server),
 > `acme.sh`, sealing/rotating, and publishing the custody bundle.
 
 `seal` establishes a **CT-anchored genesis proof**: durable, third-party-
@@ -256,17 +256,33 @@ only the IP; domain control then rests on the local PTR check alone),
 `--nameserver HOST[:PORT]` (resolver for the PTR check),
 `--key-bits N`, and `--out DIR`.
 
+**CT custody marker (`--ct-marker`).** Co-lists `custody.<domain>` as a
+second dNSName on the domain cert, so custody-anchoring certs are
+**discoverable in CT by domain** (`crt.sh?q=custody.<domain>`, or a log
+follower filtering the stream) rather than by scanning every logged cert.
+`custody.<domain>` is the reserved parent for a domain's CT custody records:
+the bare name is the participation marker, and command certs live beneath it
+(rotation commitments at `rotate.custody.<domain>`, future types later) — one
+`*.custody.<domain>` wildcard validates the whole subtree, and a monitor
+filters on the `custody.<domain>` suffix. The marker name needn't resolve to
+a host: prove control with a DNS-01 `_acme-challenge.custody.<domain>` TXT, or
+CNAME `custody.<domain>` to the domain. It's a **discovery aid, never a trust
+input** — anyone can mark their own cert; trust still comes from the signed
+document, CT inclusion, and the genesis anchor. The name is the *mechanism* (a
+custody chain over CT), not the identifier scheme, so it is UUID-independent.
+`--ct-marker-label LABEL` overrides the `custody` parent.
+
 **Pre-rotation (`--pre-rotate`).** For an identity that must survive
 *compromise* of its key, `seal --pre-rotate` also generates a successor key
 **`K2` cold** (kept offline) and publishes a **commitment** to it in CT: a
 certificate *under the genesis key `K1`* whose dNSName encodes `spki(K2)`
-(`k<base32>.rotate.<domain>`). Because that cert is signed by `K1` and lives
+(`k<base32>.rotate.custody.<domain>`). Because that cert is signed by `K1` and lives
 in append-only, backdate-proof CT, it **pins the successor before `K1` is
 ever exposed** — so a later thief of `K1` cannot choose a different
 successor (theirs won't match the committed hash, and the genuine
 commitment, published at genesis, always wins on earliest-SCT ordering).
 A future `ruuid rotate` reveals `K2`. This needs a wildcard DNS record
-`*.rotate.<domain>` (override with `--commit-host`) pointing at the host, and
+`*.custody.<domain>` (override with `--commit-host`) pointing at the host, and
 `next-key.pem` must be **backed up offline and kept cold** — it is your
 pinned successor.
 
@@ -296,7 +312,7 @@ rotated:      <uuid>  (generation 1)
 prev key:     <K1 SPKI>
 active key:   <K2 SPKI>
 next key:     <K3 SPKI>  (cold)
-committed as: k<base32>.rotate.<domain>
+committed as: k<base32>.rotate.custody.<domain>
 ```
 
 Publish the new document (it commits `K2`); back up the new `next-key.pem`

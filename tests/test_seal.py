@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import re
 import subprocess
 
 import pytest
@@ -57,6 +58,15 @@ def _self_sign(req: AcmeRequest) -> None:
         )
     else:
         csr = req.csr_path
+        # A real CA carries the CSR's SANs into the issued cert; mirror that
+        # so a co-listed CT marker (a second dNSName) survives issuance.
+        txt = subprocess.run(
+            ["openssl", "req", "-in", str(csr), "-noout", "-text"],
+            check=True, capture_output=True,
+        ).stdout.decode()
+        m = re.search(r"Subject Alternative Name:\s*\n\s*(.+)", txt)
+        if m:
+            san = ",".join(p.strip() for p in m.group(1).split(","))
     ext = work / f"{req.cert_out.stem}-ext.cnf"
     ext.write_text(f"subjectKeyIdentifier=hash\nsubjectAltName={san}\n")
     days = "7" if req.is_ip else "90"
@@ -255,6 +265,66 @@ def test_seal_no_domain_cert(ptr_ns, tmp_path):
         == result.spki_sha256
 
 
+# --- CT participation marker --------------------------------------------
+
+def _cert_san_names(cert_path) -> set[str]:
+    txt = subprocess.run(
+        ["openssl", "x509", "-in", str(cert_path), "-noout",
+         "-ext", "subjectAltName"],
+        check=True, capture_output=True,
+    ).stdout.decode()
+    return {m.group(1).lower()
+            for m in re.finditer(r"(?:DNS|IP Address):\s*([^,\s]+)", txt)}
+
+
+def test_seal_ct_marker_colisted_on_domain_cert(ptr_ns, tmp_path):
+    acme = FakeAcme()
+    result = seal(
+        IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
+        acme_runner=acme, challenge="http-01", ct_marker=True,
+    )
+    marker = f"custody.{DOMAIN}"
+    assert result.ct_marker == marker
+    # The marker is co-listed on the domain cert alongside the domain itself,
+    # linked to the IP cert by the shared key.
+    sans = _cert_san_names(tmp_path / "s" / "domain-cert.pem")
+    assert DOMAIN.lower() in sans
+    assert marker in sans
+    assert result.ip_cert.spki_sha256 == result.domain_cert.spki_sha256
+    manifest = json.loads((tmp_path / "s" / "seal.json").read_text())
+    assert manifest["ctMarker"] == marker
+
+
+def test_seal_ct_marker_custom_label(ptr_ns, tmp_path):
+    result = seal(
+        IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
+        acme_runner=FakeAcme(), challenge="http-01",
+        ct_marker=True, ct_marker_label="anchor",
+    )
+    assert result.ct_marker == f"anchor.{DOMAIN}"
+    assert f"anchor.{DOMAIN}" in _cert_san_names(tmp_path / "s" / "domain-cert.pem")
+
+
+def test_seal_no_ct_marker_by_default(ptr_ns, tmp_path):
+    result = seal(
+        IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
+        acme_runner=FakeAcme(), challenge="http-01",
+    )
+    assert result.ct_marker is None
+    assert _cert_san_names(tmp_path / "s" / "domain-cert.pem") == {DOMAIN.lower()}
+    manifest = json.loads((tmp_path / "s" / "seal.json").read_text())
+    assert manifest["ctMarker"] is None
+
+
+def test_seal_ct_marker_requires_domain_cert(ptr_ns, tmp_path):
+    with pytest.raises(ValueError, match="domain cert"):
+        seal(
+            IP, DOMAIN, out_dir=tmp_path / "s", nameserver=_ns_arg(ptr_ns),
+            acme_runner=FakeAcme(), challenge="http-01",
+            ct_marker=True, domain_cert=False,
+        )
+
+
 # --- PTR failures --------------------------------------------------------
 
 def test_seal_ptr_mismatch(test_ns, tmp_path):
@@ -348,8 +418,8 @@ def test_seal_pre_rotate_commits_cold_successor(ptr_ns, tmp_path):
     nk = result.next_key
     assert nk is not None
     assert nk["spkiSha256"] and nk["spkiSha256"] != result.spki_sha256  # K2 != K1
-    # commitment name is a subdomain of rotate.<domain>, its label decodes to K2
-    assert nk["commitmentName"].endswith(f".rotate.{DOMAIN}")
+    # commitment name lives under rotate.custody.<domain>; its label decodes to K2
+    assert nk["commitmentName"].endswith(f".rotate.custody.{DOMAIN}")
     label = nk["commitmentName"].split(".")[0]
     assert spki_from_commitment_label(label) == nk["spkiSha256"]
 

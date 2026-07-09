@@ -470,7 +470,7 @@ genesis key
 whose dNSName encodes
 .RI spki( K2 )
 as
-.IR k<base32>.rotate.<domain> .
+.IR k<base32>.rotate.custody.<domain> .
 Signed by
 .I K1
 and logged in append-only, backdate-proof CT, it pins the successor before
@@ -490,7 +490,7 @@ must be backed up offline and kept cold.
 .TP
 .B \-\-commit-host \fIHOST\fR
 Host under which the pre-rotation commitment dNSName is issued (default
-.IR rotate.<domain> );
+.IR rotate.custody.<domain> );
 .RI * . <HOST>
 must resolve to this host.
 .TP
@@ -551,7 +551,7 @@ Serve the HTTP-01 challenge from a running web server's webroot.
 .TP
 .B \-\-commit-host \fIHOST\fR
 Host for the successor commitment dNSName (default
-.IR rotate.<domain> ).
+.IR rotate.custody.<domain> ).
 .TP
 .B \-\-acme \fIPATH\fR
 Path to the

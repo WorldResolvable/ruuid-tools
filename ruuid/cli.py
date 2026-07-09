@@ -20,8 +20,8 @@ Subcommands:
                                [--https-port N] [--rrtype WHAT]
     ruuid seal     <address> <domain> [--type N] [--day DATE] [--out DIR]
                                [--production] [--challenge WHAT] [--webroot DIR]
-                               [--no-domain-cert] [--nameserver HOST[:PORT]]
-                               [--acme PATH]
+                               [--no-domain-cert] [--ct-marker] [--pre-rotate]
+                               [--nameserver HOST[:PORT]] [--acme PATH]
     ruuid custody  [TARGET] [--seals [--seals-dir DIR]] [--summary [--day DATE]]
 
 Resolve has five output modes:
@@ -556,6 +556,8 @@ def cmd_seal(args: argparse.Namespace) -> int:
             challenge=args.challenge,
             webroot=args.webroot,
             domain_cert=args.domain_cert,
+            ct_marker=args.ct_marker,
+            ct_marker_label=args.ct_marker_label,
             pre_rotate=args.pre_rotate,
             commit_host=args.commit_host,
             nameserver=args.nameserver,
@@ -1112,6 +1114,21 @@ def _build_parser() -> argparse.ArgumentParser:
              "(domain control then rests on the local PTR check alone)",
     )
     s.add_argument(
+        "--ct-marker", action="store_true",
+        help="co-list the CT custody marker custody.<domain> as a second "
+             "dNSName on the domain cert, so custody-anchoring certs are "
+             "discoverable in CT by domain (custody.<domain> is the reserved "
+             "parent for CT custody records; rotation commitments live under "
+             "rotate.custody.<domain>). Needs the domain cert, and the marker "
+             "name must be challenge-satisfiable (DNS-01, or a CNAME to "
+             "<domain>). Advisory only — a discovery aid, never a trust input.",
+    )
+    s.add_argument(
+        "--ct-marker-label", default="custody", metavar="LABEL",
+        help="reserved parent label for the CT custody namespace "
+             "(default: custody)",
+    )
+    s.add_argument(
         "--pre-rotate", action="store_true",
         help="(experimental) generate a successor key K2 COLD and publish a "
              "commitment to it in CT (a cert under the genesis key whose "
@@ -1123,7 +1140,9 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--commit-host", default=None, metavar="HOST",
         help="host under which the pre-rotation commitment dNSName is issued "
-             "(default: rotate.<domain>); *.<commit-host> must resolve here",
+             "(default: rotate.custody.<domain>); *.<commit-host> must resolve "
+             "here (a single *.custody.<domain> wildcard covers the whole "
+             "custody namespace)",
     )
     s.add_argument(
         "--nameserver", default=None, metavar="HOST[:PORT]",
@@ -1294,7 +1313,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ro.add_argument(
         "--commit-host", default=None, metavar="HOST",
-        help="host for the successor commitment dNSName (default rotate.<domain>)",
+        help="host for the successor commitment dNSName "
+             "(default rotate.custody.<domain>)",
     )
     ro.add_argument(
         "--acme", default=None, metavar="PATH",
