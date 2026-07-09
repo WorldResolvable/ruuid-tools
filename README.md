@@ -365,6 +365,14 @@ document (e.g. served by a party who later acquired the released IP) is not
 just rejected — `verify` **names the genuine key**, turning a denial into a
 recovery. It exits non-zero when not verified.
 
+Verification is a **permanent, historical** check, not a current-validity one:
+it asks whether CT shows a certificate carrying the IP with a window covering
+the RUUID's day — "who controlled this IP on day D?" — so an RUUID stays
+verifiable long after its certificates **expire** and after the issuer loses
+the IP prefix, its reverse zone, and its domain. Only *discovery* (finding
+where the current document is served) depends on the present; the verdict
+itself is a backdate-proof fact that nothing about today can revoke.
+
 **Key rotation is handled too.** If the document commits a key that isn't the
 genesis key, `verify` walks the **custody chain** in CT — from the genesis
 key, following each generation's pre-rotation commitment (see

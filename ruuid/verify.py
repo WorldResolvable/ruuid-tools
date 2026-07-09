@@ -544,7 +544,17 @@ def _day_to_date(day_count: int) -> _dt.date:
 
 
 def _cert_is_genesis(cert: CtCert, ru: RUUID, day_count: int) -> bool:
-    """True if `cert` carries the RUUID's IP with a window covering its day."""
+    """True if `cert` carries the RUUID's IP with a window covering its day.
+
+    This is a *historical* test — whether such a certificate existed in CT
+    covering the RUUID's day — NOT a current-validity test. It intentionally
+    never compares the certificate to the present: an EXPIRED certificate is
+    just as good, because verification asks "who controlled this IP on day D?",
+    a permanent, backdate-proof fact. An RUUID stays verifiable long after its
+    certificates lapse and after the issuer loses the IP prefix, its reverse
+    zone, and its domain — that permanence is the point of anchoring in CT
+    rather than in live DNS/TLS. (Do not add an expiry/`now()` check here.)
+    """
     net = ru.ip_network
     if not any(_ip_in_network(s, net) for s in cert.ip_sans):
         return False
