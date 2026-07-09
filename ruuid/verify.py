@@ -833,6 +833,37 @@ def coverage_from_certs(certs: list[CtCert], ip: str) -> list:
     )
 
 
+def coverage_groups_from_certs(certs: list[CtCert], ip: str) -> list:
+    """Coverage for `ip`, grouped by genesis key. Returns
+    `[(domain, spki, spans), ...]` — for each key that held an IP-SAN cert for
+    `ip`, its merged day-spans and the domain that key certified (from its
+    dNSName cert, if any; commitment `k<base32>.rotate.*` names are skipped)."""
+    domain_by_spki: dict[str, str] = {}
+    for c in certs:
+        if c.spki_sha256 in domain_by_spki:
+            continue
+        for name in c.dns_sans:
+            if spki_from_commitment_label(name.split(".", 1)[0]) is None:
+                domain_by_spki[c.spki_sha256] = name
+                break
+    windows: dict[str, list] = {}
+    for c in certs:
+        if ip in c.ip_sans:
+            windows.setdefault(c.spki_sha256, []).append(
+                (c.not_before, c.not_after, c.serial))
+    groups = [
+        (domain_by_spki.get(spki), spki, coverage_from_windows(w))
+        for spki, w in windows.items()
+    ]
+    groups.sort(key=lambda g: g[2][0].start_day if g[2] else 0)
+    return groups
+
+
+def coverage_groups_from_ct(ip: str, ct_source: CtSource) -> list:
+    """Key-grouped coverage for `ip` from CT (fetches the IP's certs + chains)."""
+    return coverage_groups_from_certs(_fetch_certs_for_ip(ip, ct_source), ip)
+
+
 class IpCertCache:
     """A permanent on-disk cache of the CT certificates for an IP.
 

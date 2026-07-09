@@ -591,18 +591,23 @@ publishing.
 .B \-\-summary \fR[\fB--day\fR \fIDATE\fR] [\fB--include-staging\fR]
 Instead of the bundle, print which issue-days
 .RI ( day_count )
-the IP already has provable genesis certificates for (merging their validity
-windows). A genesis certificate is never renewed for liveness \(em the proof is
-historical \(em so a fresh
+the IP already has provable genesis certificates for,
+.B grouped by the genesis key
+that held it and the domain that key certified. A genesis certificate is never
+renewed for liveness \(em the proof is historical \(em so a fresh
 .B ruuid seal
 is only needed to mint on a day no certificate covers. With
 .BR --day ,
-check one date and exit non-zero if it is not covered (scripts a "seal only when
-needed" workflow). With
-.BR --seals ,
-summarize from the issuer's records;
-.B --include-staging
-then also counts staging seals (default: production only).
+check one date, name the covering key, and exit non-zero if uncovered (scripts a
+"seal only when needed" workflow). Grouping needs each certificate's key:
+.B --seals
+has it in
+.I seal.json
+(fast, complete, and honours
+.BR --include-staging );
+the CT path fetches the certs for it (subject to crt.sh flakiness), so
+.B --seals
+is preferred when the records are on hand.
 .TP
 .B \-\-out \fIFILE\fR
 Write the bundle to

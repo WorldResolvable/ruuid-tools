@@ -1227,6 +1227,45 @@ def merge_day_intervals(
     return merged
 
 
+def coverage_groups(
+    ip: str,
+    *,
+    seals_dir: Path | str | None = None,
+    production_only: bool = True,
+) -> list:
+    """Coverage for `ip` grouped by genesis key, from `seal.json` records.
+
+    Returns `[(domain, spki, spans), ...]`: for each key that sealed `ip`, the
+    domain it certified, the recording RUUIDs, and the merged coverable-day
+    spans. Complete and immediate (no CT query), with the staging filter.
+    """
+    seals_dir = Path(seals_dir) if seals_dir is not None else default_seals_dir()
+    by_spki: dict[str, list] = {}          # spki -> [domain, intervals]
+    for manifest in _iter_seal_manifests(seals_dir):
+        if production_only and manifest.get("staging"):
+            continue
+        cert = manifest.get("ipCertificate") or {}
+        if cert.get("identifier") != ip:
+            continue
+        nb, na = cert.get("notBefore"), cert.get("notAfter")
+        if not nb or not na:
+            continue
+        try:
+            start = days_since_epoch(_dt.datetime.fromisoformat(nb))
+            end = days_since_epoch(_dt.datetime.fromisoformat(na))
+        except ValueError:
+            continue
+        spki = manifest.get("spkiSha256") or cert.get("spkiSha256") or "?"
+        entry = by_spki.setdefault(spki, [manifest.get("domain"), []])
+        entry[1].append((start, end, str(manifest.get("ruuid", "?"))))
+    groups = [
+        (domain, spki, merge_day_intervals(intervals))
+        for spki, (domain, intervals) in by_spki.items()
+    ]
+    groups.sort(key=lambda g: g[2][0].start_day if g[2] else 0)
+    return groups
+
+
 def find_coverage(
     ranges: list[DayCoverage], day_count: int
 ) -> DayCoverage | None:

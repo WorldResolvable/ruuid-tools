@@ -346,6 +346,25 @@ def test_ip_cert_windows_uses_json_not_pem(monkeypatch):
     assert coverage_from_windows(windows)[0].start_date.isoformat() == "2026-07-07"
 
 
+def test_coverage_groups_by_key_and_domain():
+    from ruuid.verify import coverage_groups_from_certs
+    k1_ip = _cert(ip_sans=(IP,), nb="2026-07-07T00:00:00+00:00",
+                  na="2026-07-14T00:00:00+00:00", serial="k1ip", spki=SPKI)
+    k1_dom = _cert(dns_sans=("uuid.zone",), nb="2026-07-07T00:00:00+00:00",
+                   na="2026-10-05T00:00:00+00:00", serial="k1dom", spki=SPKI)
+    k2_ip = _cert(ip_sans=(IP,), nb="2026-07-21T00:00:00+00:00",
+                  na="2026-07-28T00:00:00+00:00", serial="k2ip", spki=K2_SPKI)
+    k2_dom = _cert(dns_sans=("example.com",), nb="2026-07-21T00:00:00+00:00",
+                   na="2026-10-19T00:00:00+00:00", serial="k2dom", spki=K2_SPKI)
+    groups = coverage_groups_from_certs(
+        [k1_ip, k1_dom, K1_TO_K2, k2_ip, k2_dom], IP)   # commitment cert ignored
+    assert len(groups) == 2
+    by_key = {spki: (domain, spans) for domain, spki, spans in groups}
+    assert by_key[SPKI][0] == "uuid.zone"           # domain cert, not the k<...> name
+    assert by_key[K2_SPKI][0] == "example.com"
+    assert by_key[SPKI][1][0].start_date.isoformat() == "2026-07-07"
+
+
 def test_coverage_from_certs_merges_and_filters():
     from ruuid.verify import coverage_from_certs
     a = _cert(ip_sans=(IP,), nb="2026-07-07T00:00:00+00:00",

@@ -311,25 +311,36 @@ A genesis certificate never needs *renewing* for liveness — the proof is
 historical, frozen in CT. You only need a fresh `seal` to mint an RUUID on a
 `day_count` that no existing certificate's validity window covers. **`custody
 --summary <ip>`** reports the issue-days an IP already has provable genesis
-certificates for (merged from those certs' validity windows), and (with
-`--day`) checks a specific date — exiting non-zero when it isn't covered, so
-it drives a "seal only when needed" script:
+certificates for, **grouped by the genesis key** that held it (and the domain
+that key certified), so you can read off who controlled the IP when:
 
 ```
-$ ruuid custody 100.57.12.254 --summary                  # from CT (anyone)
-covered issue-days for 100.57.12.254:
-  2026-07-07 .. 2026-07-14   day_count 552..559   (1 cert(s))
+$ ruuid custody 100.57.12.254 --summary --seals
+RUUID coverage for 100.57.12.254
 
+uuid.zone 96D1B942…293CF7E7
+  2026-07-07 .. 2026-07-14   day_count 552..559 (1 cert(s))
+
+uuid.zone FC0DD507…02492C05
+  2026-07-08 .. 2026-07-15   day_count 553..560 (1 cert(s))
+```
+
+With `--day` it checks a specific date and names the covering key, exiting
+non-zero when nothing covers it — a "seal only when needed" script:
+
+```
 $ ruuid custody 100.57.12.254 --summary --day 2026-07-10
-2026-07-10 (day_count 555): COVERED — window 2026-07-07..2026-07-14
+2026-07-10 (day_count 555): COVERED by uuid.zone 96D1B942… — window 2026-07-07..2026-07-14
 
-$ ruuid custody 100.57.12.254 --summary --day 2026-08-01 || \
+$ ruuid custody 100.57.12.254 --summary --day 2026-08-01 --seals || \
       ruuid seal 100.57.12.254 uuid.zone --production     # seal only if uncovered
 ```
 
-Since it's part of `custody`, it works either from **CT** (anyone) or, with
-`--seals`, from the issuer's own records (`custody --summary --seals <ip>`) —
-the fast, crt.sh-free path on the issuer's box.
+It runs either from **CT** (anyone) or, with `--seals`, from the issuer's own
+records — the fast, complete path on the issuer's box. Grouping by key needs
+each cert's key, which `--seals` has for free in `seal.json`; the CT path
+fetches the certs for it (subject to crt.sh flakiness, retried), so `--seals`
+is the recommended path when you have the records.
 
 ### Verifying a genesis proof (experimental)
 

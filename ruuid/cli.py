@@ -718,28 +718,33 @@ def _custody_target_ip(target: str) -> str:
         return to_ip(target)              # IP literal or hostname (may raise ValueError)
 
 
-def _emit_coverage(ip: str, spans, args: argparse.Namespace) -> int:
+def _emit_coverage_groups(ip: str, groups, args: argparse.Namespace) -> int:
     from ruuid.generate import days_since_epoch
     from ruuid.seal import find_coverage
 
     if args.day is not None:
         target = days_since_epoch(args.day)
         date = args.day.date().isoformat()
-        span = find_coverage(spans, target)
-        if span is not None:
-            print(f"{date} (day_count {target}): COVERED — window "
-                  f"{span.start_date.isoformat()}..{span.end_date.isoformat()}")
-            return 0
+        for domain, spki, spans in groups:
+            span = find_coverage(spans, target)
+            if span is not None:
+                print(f"{date} (day_count {target}): COVERED by "
+                      f"{domain or '(unknown domain)'} {spki} — window "
+                      f"{span.start_date.isoformat()}..{span.end_date.isoformat()}")
+                return 0
         print(f"{date} (day_count {target}): NOT COVERED for {ip}", file=sys.stderr)
         return 1
-    if not spans:
-        print(f"no sealed coverage for {ip}")
+
+    print(f"RUUID coverage for {ip}")
+    if not groups:
+        print("  (no sealed coverage)")
         return 0
-    print(f"covered issue-days for {ip}:")
-    for span in spans:
-        print(f"  {span.start_date.isoformat()} .. {span.end_date.isoformat()}   "
-              f"day_count {span.start_day}..{span.end_day}   "
-              f"({len(span.seals)} cert(s))")
+    for domain, spki, spans in groups:
+        print(f"\n{domain or '(unknown domain)'} {spki}")
+        for span in spans:
+            print(f"  {span.start_date.isoformat()} .. {span.end_date.isoformat()}   "
+                  f"day_count {span.start_day}..{span.end_day} "
+                  f"({len(span.seals)} cert(s))")
     return 0
 
 
@@ -750,11 +755,11 @@ def cmd_custody(args: argparse.Namespace) -> int:
     reads the issuer's own certificate records instead of querying CT.
     """
     from ruuid.verify import (
-        CrtShSource, build_published_custody, coverage_from_windows,
+        CrtShSource, build_published_custody, coverage_groups_from_ct,
         gather_custody_for_ip,
     )
 
-    # --summary: day-coverage spans instead of the full bundle.
+    # --summary: day-coverage (grouped by key) instead of the full bundle.
     if args.summary:
         if not args.target:
             print("ruuid custody --summary: an IP/host/RUUID is required",
@@ -767,18 +772,16 @@ def cmd_custody(args: argparse.Namespace) -> int:
             return 1
         try:
             if args.seals:
-                from ruuid.seal import default_seals_dir, ip_coverage
+                from ruuid.seal import coverage_groups, default_seals_dir
                 seals = args.seals_dir or str(default_seals_dir())
-                spans = ip_coverage(ip, seals_dir=seals,
-                                    production_only=not args.include_staging)
+                groups = coverage_groups(ip, seals_dir=seals,
+                                         production_only=not args.include_staging)
             else:
-                # Coverage needs only validity windows, which are in the crt.sh
-                # JSON — no per-cert PEM fetch (avoids the flaky ?d= endpoint).
-                spans = coverage_from_windows(CrtShSource().ip_cert_windows(ip))
+                groups = coverage_groups_from_ct(ip, CrtShSource())
         except (OSError, ValueError, RuntimeError) as e:
             print(f"ruuid custody: {e}", file=sys.stderr)
             return 1
-        return _emit_coverage(ip, spans, args)
+        return _emit_coverage_groups(ip, groups, args)
 
     # Full bundle.
     if args.seals:
