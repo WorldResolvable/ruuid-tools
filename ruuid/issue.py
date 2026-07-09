@@ -223,39 +223,61 @@ def format_zone_records(
 
 # --- CLI helpers --------------------------------------------------------
 
+CID_CONTEXT = "https://www.w3.org/ns/cid/v1"
+
+
+def basic_document(domain: str) -> dict:
+    """A minimal UUID document for `domain`: just `@context` and `id`.
+
+    Used when there is no zone file, or when the domain isn't described in the
+    zone (or is described without a `service` array): there are no referent
+    templates to publish, so the document carries only its CID context and the
+    well-known URL at which it is served
+    (`https://<domain>/.well-known/uuid-document.json`).
+    """
+    return {
+        "@context": CID_CONTEXT,
+        "id": f"https://{domain}/.well-known/uuid-document.json",
+    }
+
+
 def emit_document(
-    zone_path: Path | str,
+    zone_path: Path | str | None = None,
     *,
     domain: str | None = None,
     indent: int = 2,
 ) -> str:
-    """Return the UUID-document JSON for `domain` (or the only domain that has one).
+    """Return the UUID-document JSON for `domain`.
 
-    Raises ValueError when no domain publishes a UUID document, or
-    when multiple do and `--domain` wasn't supplied, or when the
-    requested domain isn't in the zone.
+    Works with or without a zone file:
+
+    - a `domain` that the zone describes with a `service` array publishes that
+      array (the full referent-template document);
+    - any other `domain` — not in the zone, described without a service array,
+      or when there is no zone file at all — gets a **basic** document with just
+      `@context` and `id`.
+
+    Without `domain`, the domain is inferred from the zone when exactly one
+    domain publishes a service array; otherwise a domain must be given.
     """
-    issuers = load_zone(zone_path)
-    docs = build_uuid_documents(issuers)
-    if not docs:
-        raise ValueError(
-            "zone has no domain entries with a service array; nothing to publish"
-        )
+    docs = build_uuid_documents(load_zone(zone_path)) if zone_path is not None else []
+
     if domain is None:
+        if not docs:
+            raise ValueError(
+                "no domain given, and none can be inferred from the zone "
+                "(no domain publishes a service array) — specify a domain"
+            )
         if len(docs) > 1:
             domains = ", ".join(d for d, _ in docs)
             raise ValueError(
-                f"zone has multiple document-publishing domains ({domains}); "
-                f"use --domain to select one"
+                f"the zone publishes multiple domains ({domains}); "
+                f"specify a domain"
             )
-        _, doc = docs[0]
+        doc = docs[0][1]
     else:
-        match = next((d for d, x in docs if d == domain), None)
-        if match is None:
-            raise ValueError(
-                f"no document-publishing domain entry found for {domain!r}"
-            )
-        _, doc = next((d, x) for d, x in docs if d == domain)
+        # The zone's document for this domain if it publishes one, else basic.
+        doc = next((x for d, x in docs if d == domain), None) or basic_document(domain)
     return json.dumps(doc, indent=indent) + "\n"
 
 

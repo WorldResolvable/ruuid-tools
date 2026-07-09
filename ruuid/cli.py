@@ -957,22 +957,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="print a domain's UUID document JSON",
         description=(
             "Print the UUID document to publish at "
-            "https://<domain>/.well-known/uuid-document.json (or "
-            "wherever the _uuid.<domain> URI/TXT record points). "
-            "Domains in the zone file MUST have `base_url` set so the "
-            "service `serviceEndpoint` templates can be built. If the "
-            "zone contains multiple domains with classes, use --domain "
-            "to select one."
+            "https://<domain>/.well-known/uuid-document.json (or wherever the "
+            "_uuid.<domain> URI/TXT record points). With a --zone file, a "
+            "domain described there with a `service` array publishes that "
+            "array; any other domain — not in the zone, or with no zone file "
+            "at all — gets a basic document (just @context and id). Without "
+            "DOMAIN, the domain is inferred from the zone when exactly one "
+            "domain publishes a service array."
         ),
     )
     d.add_argument(
-        "--zone", required=True,
-        help="path to the zone JSON file",
+        "domain", nargs="?", default=None,
+        help="domain to emit the document for (optional only when it can be "
+             "inferred from a single-publishing zone)",
     )
     d.add_argument(
-        "--domain", default=None,
-        help="domain to emit (required when the zone "
-             "describes more than one)",
+        "--zone", default=None,
+        help="path to the zone JSON file (optional)",
     )
     d.set_defaults(func=cmd_document)
 

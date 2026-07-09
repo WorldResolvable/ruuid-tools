@@ -509,6 +509,22 @@ def test_document_emits_json_to_stdout(tmp_path, capsys):
     assert doc["service"][0]["serviceEndpoint"] == "https://x.example/t/<identifier>"
 
 
+def test_document_basic_without_zone(capsys):
+    import json
+    rc = main(["document", "new.example"])
+    assert rc == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["@context"] == "https://www.w3.org/ns/cid/v1"
+    assert doc["id"] == "https://new.example/.well-known/uuid-document.json"
+    assert "service" not in doc and "verificationMethod" not in doc
+
+
+def test_document_needs_domain_without_zone(capsys):
+    rc = main(["document"])
+    assert rc == 1
+    assert "specify a domain" in capsys.readouterr().err
+
+
 def test_document_fails_without_domain_when_ambiguous(tmp_path, capsys):
     p = _write_zone(tmp_path, {"domains": [
         {

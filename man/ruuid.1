@@ -25,10 +25,9 @@ ruuid \- generate and resolve Resolvable UUIDs (RUUIDs)
 .IR URL ]
 .br
 .B ruuid document
-.B --zone
-.I FILE
-.RB [ --domain
-.IR DOMAIN ]
+.RI [ DOMAIN ]
+.RB [ --zone
+.IR FILE ]
 .br
 .B ruuid records
 .B --zone
@@ -300,16 +299,31 @@ still print, since those don't depend on DNS. Successful-but-failover paths
 suppress the FAILOVR line and per-hop error entries; only the successful
 hops print.
 .SH DOCUMENT
-.B ruuid document --zone \fIFILE\fR [\fB--domain\fR \fIDOMAIN\fR]
+.B ruuid document \fR[\fIDOMAIN\fR] [\fB--zone\fR \fIFILE\fR]
 .PP
-Print the UUID document for a domain entry in the zone file as JSON, suitable
-for uploading to
+Print a domain's UUID document as JSON, suitable for uploading to
 .I https://<domain>/.well-known/uuid-document.json
 or wherever the
 .RI _uuid. <domain>
-URI/TXT record points.
-.B --domain
-selects one domain when the zone defines more than one.
+URI/TXT record points. With a
+.B --zone
+file, a domain described there with a
+.I service
+array publishes that array (the full referent-template document); any other
+domain \(em not in the zone, described without a service array, or when there is
+no zone file at all \(em gets a
+.B basic
+document with just
+.I @context
+and
+.IR id .
+Without
+.IR DOMAIN ,
+the domain is inferred from the zone when exactly one domain publishes a service
+array; otherwise a domain must be given.
+.TP
+.B \-\-zone \fIFILE\fR
+Zone JSON file to read service templates from (optional).
 .SH RECORDS
 .B ruuid records --zone \fIFILE\fR [options]
 .PP

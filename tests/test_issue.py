@@ -294,23 +294,46 @@ def test_emit_document_selects_by_domain(tmp_path):
     assert doc["service"][0]["serviceEndpoint"].startswith("https://b.example/")
 
 
-def test_emit_document_rejects_unknown_domain(tmp_path):
+def test_emit_document_basic_for_domain_not_in_zone(tmp_path):
     p = _write_zone(tmp_path, {"domains": [
         {
             "domain": "a.example", "anchors": ["192.0.2.1"],
             "service": [{"id": "#1", "type": "T", "serviceEndpoint": "https://a.example/t/<identifier>"}],
         },
     ]})
-    with pytest.raises(ValueError, match="no document-publishing"):
-        emit_document(p, domain="missing.example")
+    doc = json.loads(emit_document(p, domain="missing.example"))
+    assert doc == {
+        "@context": "https://www.w3.org/ns/cid/v1",
+        "id": "https://missing.example/.well-known/uuid-document.json",
+    }
+    assert "service" not in doc
 
 
-def test_emit_document_rejects_zone_with_no_service(tmp_path):
+def test_emit_document_basic_without_a_zone():
+    doc = json.loads(emit_document(domain="fresh.example"))
+    assert doc == {
+        "@context": "https://www.w3.org/ns/cid/v1",
+        "id": "https://fresh.example/.well-known/uuid-document.json",
+    }
+
+
+def test_emit_document_domain_in_zone_without_service_is_basic(tmp_path):
     p = _write_zone(tmp_path, {"domains": [
-        {"domain": "x.example", "anchors": ["192.0.2.1"]},
+        {"domain": "x.example", "anchors": ["192.0.2.1"]},   # no service array
     ]})
-    with pytest.raises(ValueError, match="no domain entries"):
+    doc = json.loads(emit_document(p, domain="x.example"))
+    assert doc["id"] == "https://x.example/.well-known/uuid-document.json"
+    assert "service" not in doc
+
+
+def test_emit_document_needs_domain_when_none_inferable(tmp_path):
+    p = _write_zone(tmp_path, {"domains": [
+        {"domain": "x.example", "anchors": ["192.0.2.1"]},   # nothing publishes
+    ]})
+    with pytest.raises(ValueError, match="specify a domain"):
         emit_document(p)
+    with pytest.raises(ValueError, match="specify a domain"):
+        emit_document()                                      # no zone, no domain
 
 
 # --- emit_records (CLI helper) ------------------------------------------
